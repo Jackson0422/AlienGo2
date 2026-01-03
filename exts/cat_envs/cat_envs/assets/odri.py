@@ -84,3 +84,72 @@ SOLO12_CFG = ArticulationCfg(
     },
 )
 SOLO12_MINIMAL_CFG = SOLO12_CFG.copy()
+
+
+ALIENGO_CFG = ArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(
+        usd_path=f"exts/cat_envs/cat_envs/assets/Robots/odri/AlienGo_description/usd/aliengo_description.usd",
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_contact_impulse=1e32,
+            max_depenetration_velocity=100.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True,
+            solver_position_iteration_count=4,
+            solver_velocity_iteration_count=1,
+        ),
+        collision_props=sim_utils.CollisionPropertiesCfg(
+            contact_offset=0.02, rest_offset=0.0
+        ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.6),
+        joint_pos={
+            "FL_hip_joint": 0.0,
+            "FL_thigh_joint": 0.9,
+            "FL_calf_joint": -1.7,
+            "FR_hip_joint": 0.0,
+            "FR_thigh_joint": 0.9,
+            "FR_calf_joint": -1.7,
+            "RR_hip_joint": 0.0,
+            "RR_thigh_joint": 0.9,
+            "RR_calf_joint": -1.7,
+            "RL_hip_joint": 0.0,
+            "RL_thigh_joint": 0.9,
+            "RL_calf_joint": -1.7,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=1.0,
+    actuators={
+        "legs": IdealPDActuatorCfg(
+            joint_names_expr=[
+                "FL_hip_joint",
+                "FL_thigh_joint",
+                "FL_calf_joint",
+                "FR_hip_joint",
+                "FR_thigh_joint",
+                "FR_calf_joint",
+                "RR_hip_joint",
+                "RR_thigh_joint",
+                "RR_calf_joint",
+                "RL_hip_joint",
+                "RL_thigh_joint",
+                "RL_calf_joint",
+            ],
+            armature=0.00036207,
+            effort_limit=33.5,
+            velocity_limit=21.0,
+            stiffness={".*": 25.0},
+            damping={".*": 0.5},
+        ),
+    },
+)
+ALIENGO_MINIMAL_CFG = ALIENGO_CFG.copy()

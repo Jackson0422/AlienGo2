@@ -6,8 +6,12 @@
 # needed to import for allowing type-hinting: np.ndarray | None
 from __future__ import annotations
 
+import os
+import json
 import torch
 from collections.abc import Sequence
+from datetime import datetime
+from pathlib import Path
 
 from isaaclab.envs.common import VecEnvStepReturn
 from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
@@ -38,6 +42,25 @@ class CaTEnv(ManagerBasedRLEnv):
         if hasattr(self.cfg, "constraints"):
             self.constraint_manager = ConstraintManager(self.cfg.constraints, self)
             print("[INFO] Constraint Manager: ", self.constraint_manager)
+        
+        # -- termination logging (JSONL + 统计摘要方案)
+        self.log_dir = Path(os.path.expanduser("~")) / "termination_logs"
+        self.log_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 使用JSONL格式（每行一个JSON对象，可追加写入）
+        self.log_file = self.log_dir / f"terminations_{timestamp}.jsonl"
+        
+        # 同时保存一个统计摘要文件
+        self.summary_file = self.log_dir / f"summary_{timestamp}.json"
+        self.summary_stats = {
+            "start_time": timestamp,
+            "total_resets": 0,
+            "termination_counts": {},
+        }
+        
+        print(f"[INFO] Termination logs will be saved to: {self.log_file}")
+        print(f"[INFO] Summary stats will be saved to: {self.summary_file}")
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics and reset terminated environments.
@@ -95,6 +118,60 @@ class CaTEnv(ManagerBasedRLEnv):
         self.reset_buf = self.termination_manager.compute()
         self.reset_terminated = self.termination_manager.terminated
         self.reset_time_outs = self.termination_manager.time_outs
+        
+        # -- log termination reasons (优化：JSONL追加 + 统计摘要)
+        if self.reset_buf.any():
+            num_resets = self.reset_buf.sum().item()
+            
+            # 只存储统计信息，不存储完整的env_id列表
+            termination_stats = {}
+            for term_name in self.termination_manager.active_terms:
+                term_value = self.termination_manager.get_term(term_name)
+                if term_value.any():
+                    count = term_value.sum().item()
+                    termination_stats[term_name] = count
+                    # 更新摘要统计
+                    if term_name not in self.summary_stats["termination_counts"]:
+                        self.summary_stats["termination_counts"][term_name] = 0
+                    self.summary_stats["termination_counts"][term_name] += count
+            
+            # 计算训练进度
+            current_iteration = self.common_step_counter // 24
+            training_progress = (current_iteration / 2000) * 100
+            
+            if training_progress < 20:
+                training_stage = "early"
+            elif training_progress < 60:
+                training_stage = "mid"
+            elif training_progress < 90:
+                training_stage = "late"
+            else:
+                training_stage = "final"
+            
+            # 创建轻量级日志条目（只有统计信息）
+            log_entry = {
+                "step": self.common_step_counter,
+                "iteration": current_iteration,
+                "progress": round(training_progress, 2),
+                "stage": training_stage,
+                "num_resets": num_resets,
+                "termination_stats": termination_stats,  # 只存储计数，不存储ID列表
+            }
+            
+            # 追加模式写入JSONL（O(1)操作，无需重写整个文件）
+            with open(self.log_file, 'a') as f:
+                f.write(json.dumps(log_entry) + '\n')
+            
+            # 更新总计数
+            self.summary_stats["total_resets"] += num_resets
+            
+            # 每1000次reset更新一次摘要文件（而不是每100次）
+            if self.summary_stats["total_resets"] % 1000 == 0:
+                self.summary_stats["last_step"] = self.common_step_counter
+                self.summary_stats["last_update"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                with open(self.summary_file, 'w') as f:
+                    json.dump(self.summary_stats, f, indent=2)
+        
         # -- CaT constraints prob computation
         if hasattr(self.cfg, "constraints"):
             cstr_prob = self.constraint_manager.compute()
@@ -198,3 +275,22 @@ class CaTEnv(ManagerBasedRLEnv):
 
         # reset the episode length buffer
         self.episode_length_buf[env_ids] = 0
+    
+    def close(self):
+        """Save final termination stats before closing the environment."""
+        if hasattr(self, 'summary_stats'):
+            # 保存最终摘要
+            self.summary_stats["end_time"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self.summary_stats["final_step"] = self.common_step_counter
+            with open(self.summary_file, 'w') as f:
+                json.dump(self.summary_stats, f, indent=2)
+            
+            print(f"\n[INFO] Termination logs saved to: {self.log_file}")
+            print(f"[INFO] Summary stats saved to: {self.summary_file}")
+            print(f"\n[INFO] Termination Reason Summary:")
+            print(f"  Total resets: {self.summary_stats['total_resets']}")
+            for reason, count in sorted(self.summary_stats['termination_counts'].items(), 
+                                       key=lambda x: x[1], reverse=True):
+                print(f"  {reason}: {count} occurrences")
+        
+        super().close()
