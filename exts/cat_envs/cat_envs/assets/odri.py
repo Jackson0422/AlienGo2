@@ -110,20 +110,20 @@ ALIENGO_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.6),
+        pos=(0.0, 0.0, 0.40),# the height form rviz shows 35cm
         joint_pos={
             "FL_hip_joint": 0.0,
             "FL_thigh_joint": 0.9,
-            "FL_calf_joint": -1.7,
+            "FL_calf_joint": -1.7, # -1.7 is the default value, but we set it to -1.0 to avoid the robot falling down
             "FR_hip_joint": 0.0,
             "FR_thigh_joint": 0.9,
-            "FR_calf_joint": -1.7,
+            "FR_calf_joint": -1.7, # -1.7 is the default value, but we set it to -1.0 to avoid the robot falling down
             "RR_hip_joint": 0.0,
             "RR_thigh_joint": 0.9,
-            "RR_calf_joint": -1.7,
+            "RR_calf_joint": -1.7, # -1.7 is the default value, but we set it to -1.0 to avoid the robot falling down
             "RL_hip_joint": 0.0,
             "RL_thigh_joint": 0.9,
-            "RL_calf_joint": -1.7,
+            "RL_calf_joint": -1.7, # -1.7 is the default value, but we set it to -1.0 to avoid the robot falling down
         },
         joint_vel={".*": 0.0},
     ),
