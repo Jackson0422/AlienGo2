@@ -202,6 +202,7 @@ class EventCfg:
             "pose_range": {
                 "x": (-0.05, 0.05),
                 "y": (-0.05, 0.05),
+                "z": (0.58, 0.62),
                 "yaw": (0.0, 0.0),
             },
             "velocity_range": {
@@ -365,11 +366,22 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg(
-                "contact_forces", body_names=["base", ".*_thigh"]
+                "contact_forces", body_names=["base"]
             ),
             "threshold": 1.0,
         },
     )
+    
+    thigh_contact = DoneTerm(
+        func=mdp.illegal_contact,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=[".*_thigh"]  # 只检测大腿
+            ),
+            "threshold": 1.0,
+        },
+    )
+
     upside_down = DoneTerm(
         func=terminations.upside_down,
         params={
