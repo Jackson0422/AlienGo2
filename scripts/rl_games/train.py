@@ -48,6 +48,7 @@ import gymnasium as gym
 import math
 import os
 import random
+import torch
 from datetime import datetime
 
 from rl_games.common import env_configurations, vecenv
@@ -60,6 +61,9 @@ from isaaclab.envs import (
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
+from isaaclab.managers import TerminationTermCfg as DoneTerm
+from cat_envs.tasks.utils.cat.manager_constraint_cfg import ConstraintTermCfg as ConstraintTerm
+from isaaclab.managers import SceneEntityCfg 
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
@@ -67,8 +71,11 @@ from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_rl.rl_games import RlGamesGpuEnv
 from cat_envs.tasks.utils.rl_games.rl_games import RlGamesVecEnvWrapperCaT as RlGamesVecEnvWrapper
 from cat_envs.tasks.utils.rl_games.build_alg_runner import build_alg_runner
-
+from cat_envs.tasks.utils.cat.manager_constraint_cfg import ConstraintTermCfg as ConstraintTerm
+from isaaclab.managers import SceneEntityCfg
 import cat_envs.tasks  # noqa: F401
+import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
+import cat_envs.tasks.utils.cat.constraints as constraints 
 
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
@@ -136,8 +143,63 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         clip_obs = math.inf
         clip_actions = math.inf
 
+    # configure terminations - 只保留 time_out
+    # env_cfg.terminations = type(env_cfg.terminations)( time_out=DoneTerm(func=mdp.time_out, time_out=True) )
+    # print("[DEBUG] terminations cfg AFTER override:", env_cfg.terminations)
+
+    # print("[DEBUG] constraints BEFORE:", env_cfg.constraints) 
+    # for k in list(vars(env_cfg.constraints).keys()): 
+    #     setattr(env_cfg.constraints, k, None) 
+    
+    
+    # # 禁掉 curriculum 
+    # env_cfg.constraints.joint_torque = ConstraintTerm( func=constraints.joint_torque, max_p=0.0, params={ "limit": 1e9, "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]) },)
+    
+    # for k in list(vars(env_cfg.curriculum).keys()):
+    #     setattr(env_cfg.curriculum, k, None)
+        
+    # print("[DEBUG] constraints AFTER:", env_cfg.constraints)
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+
+    # ================== DEBUG: 检查初始高度是否正确 ==================
+    print("\n" + "="*70)
+    print("[DEBUG] 正在检查机器人初始姿态...")
+    obs, info = env.reset()
+    # 使用 unwrapped 访问底层 Isaac Lab 环境
+    root_z = env.unwrapped.scene["robot"].data.root_state_w[:, 2]
+    print(f"[DEBUG] Reset后的机器人高度:")
+    print(f"        平均: {root_z.mean().item():.4f}m")
+    print(f"        最小: {root_z.min().item():.4f}m")
+    print(f"        最大: {root_z.max().item():.4f}m")
+    
+    # 执行一步物理模拟，看是否会掉落
+    sample_action = torch.from_numpy(env.action_space.sample()).to(env.unwrapped.device)
+    obs, rew, terminated, truncated, info = env.step(sample_action)
+    root_z2 = env.unwrapped.scene["robot"].data.root_state_w[:, 2]
+    height_change = (root_z2.mean() - root_z.mean()).item()
+    print(f"[DEBUG] 第1步后的机器人高度:")
+    print(f"        平均: {root_z2.mean().item():.4f}m")
+    print(f"        最小: {root_z2.min().item():.4f}m")
+    print(f"        最大: {root_z2.max().item():.4f}m")
+    print(f"[DEBUG] 高度变化: {height_change:+.4f}m")
+    
+    # 检查有多少环境立即触发了termination
+    done = (terminated > 0.5) | (truncated > 0.5)
+    if done.any():
+        num_terminated = done.sum().item()
+        total_envs = done.numel()
+        percent = (num_terminated / total_envs) * 100
+        print(f"[DEBUG] ⚠️  第1步就有 {num_terminated}/{total_envs} ({percent:.1f}%) 个环境终止了！")
+        
+        if height_change < -0.02:
+            print(f"[DEBUG] ⚠️  机器人快速下落 ({height_change:.4f}m)，姿态可能不稳定！")
+    else:
+        print(f"[DEBUG] ✓ 没有环境在第1步终止")
+        if abs(height_change) < 0.01:
+            print(f"[DEBUG] ✓ 高度变化很小，姿态稳定！")
+    print("="*70 + "\n")
+    # ================================================================
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
