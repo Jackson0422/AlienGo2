@@ -286,12 +286,12 @@ class ConstraintsCfg:
 
     # Safety Hard constraints
     # Knee and base
-    # contact = ConstraintTerm(
-    #     func=constraints.contact,
-    #     max_p=1.0,
-    #     params={
-    #             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_thigh"])},
-    # )
+    contact = ConstraintTerm(
+        func=constraints.contact,
+        max_p=1.0,
+        params={
+                "asset_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_thigh"])},
+    )
     # The leg of AlienGo is hip - thigh - calf, so the foot contact force is the calf contact force
     foot_contact_force = ConstraintTerm(
         func=constraints.foot_contact_force,
@@ -361,32 +361,32 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # base_contact = DoneTerm(
-    #     func=mdp.illegal_contact,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces", body_names=["base"]
-    #         ),
-    #         "threshold": 1.0,
-    #     },
-    # )
+    base_contact = DoneTerm(
+        func=terminations.illegal_contact_current_frame,  # 使用自定义函数，只检测当前帧
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["base"]
+            ),
+            "threshold": 1.0,
+        },
+    )
     
-    # thigh_contact = DoneTerm(
-    #     func=mdp.illegal_contact,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces", body_names=[".*_thigh"]  # 只检测大腿
-    #         ),
-    #         "threshold": 1.0,
-    #     },
-    # )
+    thigh_contact = DoneTerm(
+        func=terminations.illegal_contact_current_frame,  # 使用自定义函数，只检测当前帧
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=[".*_thigh"]  # 只检测大腿
+            ),
+            "threshold": 1.0,
+        },
+    )
 
-    # upside_down = DoneTerm(
-    #     func=terminations.upside_down,
-    #     params={
-    #         "limit": 0.8,
-    #     },
-    # )
+    upside_down = DoneTerm(
+        func=terminations.upside_down,
+        params={
+            "limit": 0.8,
+        },
+    )
 
 
 MAX_CURRICULUM_ITERATIONS = 1000

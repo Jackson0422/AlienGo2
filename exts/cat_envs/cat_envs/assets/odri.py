@@ -101,7 +101,7 @@ ALIENGO_CFG = ArticulationCfg(
             max_depenetration_velocity=100.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True,
+            enabled_self_collisions=False,     # disable self collisions to avoid the robot falling down
             solver_position_iteration_count=4,
             solver_velocity_iteration_count=1,
         ),
@@ -110,7 +110,7 @@ ALIENGO_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.40),# the height form rviz shows 35cm
+        pos=(0.0, 0.0, 0.4),# the height form rviz shows 35cm
         joint_pos={
             "FL_hip_joint": 0.0,
             "FL_thigh_joint": 0.9,

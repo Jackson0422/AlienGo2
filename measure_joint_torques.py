@@ -33,8 +33,8 @@ from pxr import UsdPhysics
 def main():
     """Main function"""
     
-    # Create simulation context
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device="cuda:0", gravity=(0.0, 0.0, -9.81))
+    # Create simulation context (smaller dt for better stability)
+    sim_cfg = sim_utils.SimulationCfg(dt=0.005, device="cuda:0", gravity=(0.0, 0.0, -9.81))
     sim = SimulationContext(sim_cfg)
     sim.set_camera_view(eye=[2.5, 2.5, 2.5], target=[0.0, 0.0, 0.0])
     
@@ -89,28 +89,28 @@ def main():
                 max_contact_impulse=1e32,
                 max_depenetration_velocity=100.0,
             ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=True,
-                solver_position_iteration_count=4,
-                solver_velocity_iteration_count=1,
-            ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False,  # Disable to avoid collision interference
+            solver_position_iteration_count=8,  # Increase for better stability
+            solver_velocity_iteration_count=2,
+        ),
             collision_props=sim_utils.CollisionPropertiesCfg(
                 contact_offset=0.02, rest_offset=0.0
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.4),  # Height 0.4m (more stable height)
+            pos=(0.0, 0.0, 0.5),  # Start high to avoid ground contact during warm-start
             joint_pos={
-                "FL_hip_joint": 0.0,
-                "FL_thigh_joint": 0.9,   # 0.9 rad (approx 51.6°, thigh more vertical)
+                "FL_hip_joint": 0.2,      # Left legs abduct outward
+                "FL_thigh_joint": 0.9,    # 0.9 rad (approx 51.6°, thigh more vertical)
                 "FL_calf_joint": -1.7,    # -1.7 rad (approx -97.4°, moderate bend)
-                "FR_hip_joint": 0.0,
+                "FR_hip_joint": -0.2,     # Right legs abduct outward (opposite sign)
                 "FR_thigh_joint": 0.9,
                 "FR_calf_joint": -1.7,
-                "RR_hip_joint": 0.0,
+                "RR_hip_joint": -0.2,     # Right rear
                 "RR_thigh_joint": 0.9,
                 "RR_calf_joint": -1.7,
-                "RL_hip_joint": 0.0,
+                "RL_hip_joint": 0.2,      # Left rear
                 "RL_thigh_joint": 0.9,
                 "RL_calf_joint": -1.7,
             },
@@ -125,7 +125,7 @@ def main():
                     "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
                     "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
                 ],
-                effort_limit=33.5,
+                effort_limit=200.0,  # Temporarily increased to test if pose is achievable
                 velocity_limit=21.0,
                 stiffness={".*": 80.0},  # Increase stiffness
                 damping={".*": 2.0},     # Increase damping
@@ -139,7 +139,10 @@ def main():
     
     # Start simulation
     sim.reset()
-    print("Scene reset complete")
+    
+    # ===== Critical Fix 1: Force apply initial state =====
+    print("Applying initial state to robot...")
+    robot.reset()  # Critical: make init_state take effect
     
     # Get joint names
     joint_names = robot.data.joint_names
@@ -148,16 +151,16 @@ def main():
     
     # Build target position based on actual joint order
     target_angles = {
-        "FL_hip_joint": 0.0,
+        "FL_hip_joint": 0.2,      # Left legs abduct outward for wider stance
         "FL_thigh_joint": 0.9,
         "FL_calf_joint": -1.7,
-        "FR_hip_joint": 0.0,
+        "FR_hip_joint": -0.2,     # Right legs abduct outward (opposite sign)
         "FR_thigh_joint": 0.9,
         "FR_calf_joint": -1.7,
-        "RR_hip_joint": 0.0,
+        "RR_hip_joint": -0.2,     # Right rear
         "RR_thigh_joint": 0.9,
         "RR_calf_joint": -1.7,
-        "RL_hip_joint": 0.0,
+        "RL_hip_joint": 0.2,      # Left rear
         "RL_thigh_joint": 0.9,
         "RL_calf_joint": -1.7,
     }
@@ -172,14 +175,134 @@ def main():
         angle_deg = np.degrees(angle_rad)
         print(f"  {name:20s}: {angle_rad:7.3f} rad ({angle_deg:8.2f}°)")
     
-    print("\nStarting simulation, waiting for system to stabilize...")
+    # Force write joint state to simulation
+    zero_vel = torch.zeros_like(target_joint_pos)
+    robot.write_joint_state_to_sim(target_joint_pos, zero_vel)
+    
+    # Force base to high position (avoid ground contact during warm-start)
+    root_state = robot.data.root_state_w.clone()
+    root_state[0, 2] = 1.0  # Set base z to 1.0m (suspended in air)
+    root_state[0, 7:13] = 0.0  # Clear lin_vel + ang_vel
+    robot.write_root_state_to_sim(root_state)
+    robot.write_data_to_sim()
+    
+    # Let the write take effect
+    for _ in range(5):
+        sim.step()
+        robot.update(dt=sim.get_physics_dt())
+    
+    current_base_z = robot.data.root_pos_w[0, 2].item()
+    print(f"Initial state applied successfully (base z = {current_base_z:.4f} m)")
+    
+    # ===== Critical Fix 2: Warm-start without gravity =====
+    print("\nWarm-starting without gravity (aligning joints)...")
+    
+    # Disable gravity by setting it to zero via USD Physics Scene
+    from pxr import UsdPhysics
+    stage = sim.stage
+    physics_scene = UsdPhysics.Scene.Get(stage, "/physicsScene")
+    
+    if physics_scene:
+        physics_scene.GetGravityMagnitudeAttr().Set(0.0)
+        print("Gravity disabled for warm-start")
+    else:
+        print("Warning: Could not find physics scene, skipping gravity manipulation")
+    
+    for i in range(100):
+        robot.set_joint_position_target(target_joint_pos)
+        robot.write_data_to_sim()
+        sim.step()
+        robot.update(dt=sim.get_physics_dt())
+        
+        if (i + 1) % 20 == 0:
+            current_pos = robot.data.joint_pos[0]
+            pos_error = torch.abs(current_pos - target_joint_pos[0]).max().item()
+            print(f"  Warm-start step {i+1}/100: pos_error = {pos_error:.6f} rad")
+    
+    # === CRITICAL: Adjust base height using COLLISION geometry bounds ===
+    print("\nAdjusting base height using COLLISION geometry bounds...")
+    
+    from pxr import UsdGeom, Usd
+    
+    # Compatible token getter for different USD versions
+    def tok(name: str):
+        # Support both default_/default, proxy_/proxy, guide_/guide
+        # Try with underscore first, then without
+        if hasattr(UsdGeom.Tokens, name):
+            return getattr(UsdGeom.Tokens, name)
+        else:
+            return getattr(UsdGeom.Tokens, name.rstrip("_"))
+    
+    stage = sim.stage
+    bbox_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        includedPurposes=[tok("default_"), tok("proxy_"), tok("guide_")],
+        useExtentsHint=True,
+    )
+    
+    collision_paths = [
+        "/World/Robot/FL_calf/collisions",
+        "/World/Robot/FR_calf/collisions",
+        "/World/Robot/RL_calf/collisions",
+        "/World/Robot/RR_calf/collisions",
+    ]
+    
+    min_z_list = []
+    for p in collision_paths:
+        prim = stage.GetPrimAtPath(p)
+        if not prim.IsValid():
+            print(f"  Missing prim: {p}")
+            continue
+        box = bbox_cache.ComputeWorldBound(prim).GetBox()
+        min_z = box.GetMin()[2]
+        min_z_list.append(min_z)
+        print(f"  {p} min_z = {min_z:.4f}")
+    
+    if len(min_z_list) < 4:
+        print("Warning: could not read all collision bounds; skipping height adjustment.")
+    else:
+        min_collision_z = min(min_z_list)
+        print(f"Min collision z (no gravity) = {min_collision_z:.4f} m")
+        
+        desired_penetration = -0.002  # 2mm into ground
+        dz = desired_penetration - min_collision_z
+        
+        root_state = robot.data.root_state_w.clone()
+        root_state[0, 2] += dz
+        root_state[0, 7:13] = 0.0
+        robot.write_root_state_to_sim(root_state)
+        robot.write_data_to_sim()
+        
+        for _ in range(5):
+            sim.step()
+            robot.update(dt=sim.get_physics_dt())
+        
+        new_base_z = robot.data.root_pos_w[0, 2].item()
+        print(f"Adjusted base z by {dz:.4f} m; new base z = {new_base_z:.4f} m")
+        print("Collision geometry now properly contacts ground")
+    
+    # Re-enable gravity
+    print("\nEnabling gravity...")
+    if physics_scene:
+        physics_scene.GetGravityMagnitudeAttr().Set(9.81)
+        print("Gravity re-enabled")
+    
+    # Stabilize after enabling gravity
+    print("Stabilizing with gravity...")
+    for i in range(50):
+        robot.set_joint_position_target(target_joint_pos)
+        robot.write_data_to_sim()
+        sim.step()
+        robot.update(dt=sim.get_physics_dt())
+    
+    print("\nStarting torque measurement...")
     print("=" * 80)
     
     # Run simulation to let system stabilize
-    num_steps = 300  # Increased to 300 steps
+    num_steps = 600  # Increased to 600 steps for better convergence
     torque_history = []
     stable_count = 0
-    stable_threshold = 50  # Need 50 consecutive stable steps
+    stable_threshold = 200  # Need 200 consecutive stable steps
     
     for step in range(num_steps):
         # Use PD controller to maintain pose
@@ -198,35 +321,50 @@ def main():
         current_pos = robot.data.joint_pos[0]
         current_vel = robot.data.joint_vel[0]
         base_pos = robot.data.root_pos_w[0]
+        base_ang_vel = robot.data.root_vel_w[0, 3:6]  # Angular velocity
         
-        # Check if stable
+        # ===== Critical Fix 5: Stricter stability criteria =====
         pos_error = torch.abs(current_pos - target_joint_pos[0]).max().item()
         vel_max = torch.abs(current_vel).max().item()
+        ang_vel_max = torch.abs(base_ang_vel).max().item()
         
-        if pos_error < 0.1 and vel_max < 0.5:  # Position error < 0.1rad, velocity < 0.5rad/s
+        # More strict stability conditions
+        if pos_error < 0.05 and vel_max < 0.2 and ang_vel_max < 0.2:
             stable_count += 1
         else:
             stable_count = 0
         
-        # Record torque (last 50 steps for averaging)
-        if step >= num_steps - 50 or (stable_count > 20):
+        # Only record torque after achieving stability
+        if stable_count > 50:  # Start recording after 50 stable steps
             applied_torque = robot.data.applied_torque.clone()
             torque_history.append(applied_torque)
         
         # Print status every 20 steps
         if (step + 1) % 20 == 0:
             current_torque = robot.data.applied_torque[0]
+            max_torque = torch.abs(current_torque).max().item()
+            saturated_joints = (torch.abs(current_torque) > 195.0).sum().item()
             
             print(f"\nStep {step + 1}/{num_steps}:")
             print(f"  Base height: {base_pos[2]:.4f} m")
             print(f"  Position error (max): {pos_error:.6f} rad")
             print(f"  Velocity (max): {vel_max:.6f} rad/s")
-            print(f"  Current max torque: {torch.abs(current_torque).max():.3f} Nm")
+            print(f"  Angular velocity (max): {ang_vel_max:.6f} rad/s")
+            print(f"  Current max torque: {max_torque:.3f} Nm")
+            print(f"  Saturated joints (>195Nm): {saturated_joints}")
             print(f"  Stable count: {stable_count}")
         
         # If stable for long enough, end early
         if stable_count >= stable_threshold:
             print(f"\n✓ Robot is stable! Ending early at step {step + 1}.")
+            break
+        
+        # Check for collapse
+        if base_pos[2] < 0.15:
+            print(f"\n✗ Robot collapsed! Height = {base_pos[2]:.4f}m")
+            print("Possible reasons:")
+            print("  - Torque limit too low for this pose")
+            print("  - Pose is not statically stable")
             break
     
     # Calculate average torque
@@ -303,21 +441,63 @@ def main():
     print("\n" + "=" * 80)
     print("Actuator Capability Comparison")
     print("=" * 80)
-    print(f"Actuator torque limit: 33.5 Nm")
+    print(f"Real actuator torque limit: 33.5 Nm")
+    print(f"Test torque limit (relaxed): 200.0 Nm")
     print(f"Measured max torque: {max_torque_overall:.6f} Nm")
-    print(f"Max torque percentage: {max_torque_overall / 33.5 * 100:.2f}%")
+    print(f"Max torque percentage (vs 200Nm): {max_torque_overall / 200.0 * 100:.2f}%")
+    print(f"Max torque percentage (vs 33.5Nm): {max_torque_overall / 33.5 * 100:.2f}%")
     
     overall_max = max(max(torques) for torques in torque_by_type.values() if torques)
-    safety_factor = 33.5 / overall_max
+    safety_factor_real = 33.5 / overall_max
     
-    print(f"Safety factor: {safety_factor:.2f}x")
+    print(f"\nSafety factor (vs real actuator): {safety_factor_real:.2f}x")
     
+    # Check for saturation at high limit
+    if max_torque_overall > 195.0:
+        print("\n⚠️  Warning: Torques approaching test limit (200Nm)!")
+        print("Robot may still be struggling to stabilize.")
+    
+    # Compare with real actuator limit
     if overall_max > 33.5:
-        print("\n⚠️  Warning: Required torque exceeds actuator limit!")
-    elif safety_factor < 2.0:
-        print("\n⚠️  Note: Safety factor is low, may be unstable.")
+        print("\n⚠️  CRITICAL: Required torque EXCEEDS real actuator limit (33.5Nm)!")
+        print(f"    Max required: {overall_max:.2f} Nm")
+        print(f"    Actuator limit: 33.5 Nm")
+        print(f"    Excess: {overall_max - 33.5:.2f} Nm ({(overall_max/33.5 - 1)*100:.1f}% over)")
+        print("\n    This pose is NOT achievable with real AlienGo actuators!")
+        print("    Consider:")
+        print("      - Adjusting pose to reduce torque requirements")
+        print("      - Lowering base height")
+        print("      - Modifying joint angles for better weight distribution")
+    elif safety_factor_real < 2.0:
+        print("\n⚠️  Note: Safety factor is low, may be unstable in real operation.")
+        print(f"    Recommended: Adjust pose to achieve safety factor > 2.0")
     else:
-        print("\n✓ Torque requirements are within safe range.")
+        print("\n✓ Torque requirements are within safe range for real actuators!")
+        print(f"    This pose should be achievable on real AlienGo.")
+    
+    # Stability check
+    print("\n" + "=" * 80)
+    print("Stability Analysis")
+    print("=" * 80)
+    
+    if stable_count >= stable_threshold:
+        print("✓ Robot achieved stable stance")
+        print(f"  Stable for {stable_count} consecutive steps")
+        
+        # Check for near-saturation joints
+        saturated_mask = max_torque_per_joint > 190.0
+        if saturated_mask.any():
+            print("\n⚠️  Warning: Some joints near saturation (>190Nm):")
+            for i, name in enumerate(joint_names):
+                if saturated_mask[i]:
+                    print(f"    - {name}: {max_torque_per_joint[i]:.2f} Nm")
+        else:
+            print("  All joints operating within comfortable range")
+    else:
+        print("✗ Robot did NOT achieve stable stance")
+        print(f"  Only {stable_count} stable steps (threshold: {stable_threshold})")
+        print("\n⚠️  IMPORTANT: Measured torques may NOT represent static support!")
+        print("  They likely include dynamic/struggling components.")
     
     print("\n" + "=" * 80)
     print("Test Configuration:")
@@ -326,7 +506,11 @@ def main():
     print(f"  Joint angles: thigh=0.9 rad (51.6°), calf=-1.7 rad (-97.4°)")
     print(f"  PD controller stiffness: 80.0")
     print(f"  PD controller damping: 2.0")
-    print(f"  Actuator torque limit: 33.5 Nm")
+    print(f"  Test torque limit: 200.0 Nm (relaxed for testing)")
+    print(f"  Real actuator limit: 33.5 Nm")
+    print(f"  Simulation dt: 0.005 s")
+    print(f"  Self-collision: Disabled")
+    print(f"  Warm-start: Enabled (gravity-free alignment)")
     
     print("\n" + "=" * 80)
     print("Notes:")

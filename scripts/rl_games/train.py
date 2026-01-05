@@ -199,6 +199,136 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if abs(height_change) < 0.01:
             print(f"[DEBUG] ✓ 高度变化很小，姿态稳定！")
     print("="*70 + "\n")
+
+    print("[DEBUG] 检查接触传感器Body名称...")
+    
+    import re
+    contact_sensor = env.unwrapped.scene["contact_forces"]
+    
+    print(f"\n[INFO] 所有可用的Body名称 (共{len(contact_sensor.body_names)}个):")
+    for idx, name in enumerate(contact_sensor.body_names):
+        print(f"  [{idx:2d}] {name}")
+    
+    # 检查 "base" 是否存在
+    print("\n[检查1] body_names=['base']:")
+    if "base" in contact_sensor.body_names:
+        print("  ✓ 找到 'base'")
+    else:
+        print("  ✗ 未找到 'base'")
+        base_candidates = [name for name in contact_sensor.body_names 
+                          if any(keyword in name.lower() for keyword in ['base', 'trunk', 'body'])]
+        if base_candidates:
+            print(f"  → 建议使用: {base_candidates}")
+    
+    # 检查 ".*_thigh" 模式
+    print("\n[检查2] body_names=['.*_thigh']:")
+    thigh_pattern = re.compile(r".*_thigh")
+    thigh_bodies = [name for name in contact_sensor.body_names if thigh_pattern.match(name)]
+    if thigh_bodies:
+        print(f"  ✓ 匹配到 {len(thigh_bodies)} 个: {thigh_bodies}")
+    else:
+        print("  ✗ 未匹配到任何body")
+        thigh_candidates = [name for name in contact_sensor.body_names if 'thigh' in name.lower()]
+        if thigh_candidates:
+            print(f"  → 可能的名称: {thigh_candidates}")
+    
+    # 检查 ".*_calf" 模式
+    print("\n[检查3] body_names='.*_calf':")
+    calf_pattern = re.compile(r".*_calf")
+    calf_bodies = [name for name in contact_sensor.body_names if calf_pattern.match(name)]
+    if calf_bodies:
+        print(f"  ✓ 匹配到 {len(calf_bodies)} 个: {calf_bodies}")
+    else:
+        print("  ✗ 未匹配到任何body")
+        calf_candidates = [name for name in contact_sensor.body_names if 'calf' in name.lower()]
+        if calf_candidates:
+            print(f"  → 可能的名称: {calf_candidates}")
+    
+    # 显示当前的接触力数据
+    print("\n[INFO] 当前各body的接触力 (>0.1N):")
+    net_forces = contact_sensor.data.net_forces_w_history
+    force_norms = torch.norm(net_forces[0, -1, :, :], dim=-1)
+    has_contact = False
+    for idx, (name, force) in enumerate(zip(contact_sensor.body_names, force_norms)):
+        if force > 0.1:
+            print(f"  {name}: {force.item():.2f} N")
+            has_contact = True
+    if not has_contact:
+        print("  (无明显接触)")
+    
+    # ================== DEBUG: 检查传感器数据延迟和噪声 ==================
+    print("\n" + "="*70)
+    print("[DEBUG] 详细检查传感器数据...")
+    
+    net_forces = contact_sensor.data.net_forces_w_history
+    print(f"\n[传感器配置]")
+    print(f"  History length: {contact_sensor.cfg.history_length}")
+    print(f"  Update period: {contact_sensor.cfg.update_period}")
+    print(f"  数据形状: {net_forces.shape} (num_envs, history, num_bodies, 3)")
+    
+    # 检查每个body在所有历史帧的接触力
+    print(f"\n[所有历史帧的接触力详情]")
+    for body_idx, body_name in enumerate(contact_sensor.body_names):
+        print(f"\n  Body [{body_idx}] {body_name}:")
+        for hist_idx in range(net_forces.shape[1]):
+            force = net_forces[0, hist_idx, body_idx, :]
+            force_norm = torch.norm(force).item()
+            if force_norm > 0.01:  # 显示所有 > 0.01N 的力
+                print(f"    历史帧 {hist_idx}: {force_norm:.4f} N  (x={force[0].item():.3f}, y={force[1].item():.3f}, z={force[2].item():.3f})")
+            else:
+                print(f"    历史帧 {hist_idx}: {force_norm:.4f} N")
+    
+    # 检查关键body的接触力（base和thigh）
+    print(f"\n[关键Body接触力分析]")
+    
+    # Base
+    base_idx = contact_sensor.body_names.index('base')
+    base_forces_all = net_forces[0, :, base_idx, :]
+    base_norms = torch.norm(base_forces_all, dim=-1)
+    print(f"\n  Base 接触力:")
+    print(f"    当前帧: {base_norms[-1].item():.6f} N")
+    print(f"    最大值(历史): {base_norms.max().item():.6f} N")
+    print(f"    平均值(历史): {base_norms.mean().item():.6f} N")
+    print(f"    是否 > 1.0N (termination阈值): {(base_norms > 1.0).any().item()}")
+    
+    # Thighs
+    thigh_indices = [contact_sensor.body_names.index(name) 
+                     for name in ['FL_thigh', 'FR_thigh', 'RL_thigh', 'RR_thigh']]
+    print(f"\n  Thigh 接触力:")
+    for thigh_name, thigh_idx in zip(['FL_thigh', 'FR_thigh', 'RL_thigh', 'RR_thigh'], thigh_indices):
+        thigh_forces = net_forces[0, :, thigh_idx, :]
+        thigh_norms = torch.norm(thigh_forces, dim=-1)
+        max_force = thigh_norms.max().item()
+        has_contact = (thigh_norms > 1.0).any().item()
+        print(f"    {thigh_name}: 当前={thigh_norms[-1].item():.6f}N, "
+              f"最大={max_force:.6f}N, >1.0N={has_contact}")
+    
+    # Calfs (脚部)
+    calf_indices = [contact_sensor.body_names.index(name) 
+                    for name in ['FL_calf', 'FR_calf', 'RL_calf', 'RR_calf']]
+    print(f"\n  Calf (脚部) 接触力:")
+    for calf_name, calf_idx in zip(['FL_calf', 'FR_calf', 'RL_calf', 'RR_calf'], calf_indices):
+        calf_forces = net_forces[0, :, calf_idx, :]
+        calf_norms = torch.norm(calf_forces, dim=-1)
+        max_force = calf_norms.max().item()
+        exceeds_limit = (calf_norms.max() > 50.0).item()
+        print(f"    {calf_name}: 当前={calf_norms[-1].item():.4f}N, "
+              f"最大={max_force:.4f}N, >50N={exceeds_limit}")
+    
+    # 检查是否有异常的噪声峰值
+    print(f"\n[噪声检测]")
+    all_forces = net_forces[0, :, :, :]  # (history, bodies, 3)
+    all_norms = torch.norm(all_forces, dim=-1)  # (history, bodies)
+    
+    # 检查每个body的力是否有突变
+    for body_idx, body_name in enumerate(contact_sensor.body_names):
+        body_force_history = all_norms[:, body_idx]
+        if body_force_history.max() > 0.1:
+            force_diff = torch.abs(body_force_history[1:] - body_force_history[:-1])
+            max_change = force_diff.max().item() if len(force_diff) > 0 else 0
+            print(f"  {body_name}: 最大变化={max_change:.4f}N/步")
+    
+    print("="*70 + "\n")
     # ================================================================
 
     # convert to single-agent instance if required by the RL algorithm
