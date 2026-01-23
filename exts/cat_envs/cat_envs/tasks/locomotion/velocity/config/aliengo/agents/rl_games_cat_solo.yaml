@@ -19,7 +19,7 @@ params:
           name: default
         sigma_init:
           name: const_initializer
-          val: 0. # std = 1.
+          val: 0.0 # std = 1.
         fixed_sigma: True
 
     mlp:
@@ -34,7 +34,12 @@ params:
 
 
   load_checkpoint: False
-  load_path: ''
+  # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-01-08_01-21-26/nn/solo_cat.pth'
+  # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-01-08_19-32-43/nn/solo_cat.pth'  
+  # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-01-09_08-03-10/nn/solo_cat.pth' # 加入约束的双足行走训练，使用的最佳的四足行走模型
+  # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-01-10_02-17-28/nn/solo_cat.pth' # 使用第一次双足训练最佳模型来继续训练
+  # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-01-15_19-47-24/nn/solo_cat.pth' # 使用第二次双足训练最佳模型来继续训练
+  # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-01-18_18-48-20/nn/solo_cat.pth' # 使用加入约束的双足行走训练的最佳当前双足模型来继续训练
 
   config:
     name: solo_cat
@@ -43,7 +48,7 @@ params:
     device_name: 'cuda:0'
     multi_gpu: False
 
-    max_epochs: 2000
+    max_epochs: 6000
     save_best_after: 250
     save_frequency: 250
     save_intermediate: True
@@ -63,13 +68,13 @@ params:
     learning_rate: 3.e-4 # overwritten by adaptive lr_schedule
     lr_schedule: adaptive
     # schedule_type: legacy
-    kl_threshold: 0.008 # target kl for adaptive lr
+    kl_threshold: 0.016 # target kl for adaptive lr
     grad_norm: 1.0
-    entropy_coef: 0.001
+    entropy_coef: 0.01
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 24 # 24 for t = 0.02 (decimation = 4)
-    minibatch_size: 16384 # 16384 for horizon_length 24
+    horizon_length: 48 # 24 for t = 0.02 (decimation = 4)
+    minibatch_size: 32768 # 16384 for horizon_length 24
     mini_epochs: 5
     critic_coef: 2
     clip_value: True

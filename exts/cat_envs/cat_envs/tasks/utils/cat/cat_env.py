@@ -61,6 +61,16 @@ class CaTEnv(ManagerBasedRLEnv):
         
         print(f"[INFO] Termination logs will be saved to: {self.log_file}")
         print(f"[INFO] Summary stats will be saved to: {self.summary_file}")
+        
+        # -- reward tracking initialization
+        self.reward_stats = {
+            "total_reward": 0.0,
+            "reward_term_sums": {},
+            "reward_term_counts": {},
+            "reward_term_contributions": {},
+        }
+        
+        print(f"[INFO] Reward tracking initialized")
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics and reset terminated environments.
@@ -186,6 +196,16 @@ class CaTEnv(ManagerBasedRLEnv):
             self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
             dones = torch.zeros(self.num_envs, device=self.device)
 
+        # -- track reward statistics  
+        # Track total reward
+        self.reward_stats["total_reward"] += self.reward_buf.sum().item()
+        
+        # Count steps for all environments
+        for term_name in self.reward_manager.active_terms:
+            if term_name not in self.reward_stats["reward_term_counts"]:
+                self.reward_stats["reward_term_counts"][term_name] = 0
+            self.reward_stats["reward_term_counts"][term_name] += self.num_envs
+
         if len(self.recorder_manager.active_terms) > 0:
             # update observations for recording if needed
             self.obs_buf = self.observation_manager.compute()
@@ -253,6 +273,21 @@ class CaTEnv(ManagerBasedRLEnv):
         # -- rewards manager
         info = self.reward_manager.reset(env_ids)
         self.extras["log"].update(info)
+        
+        # Track reward statistics from episode summaries
+        for key, value in info.items():
+            # Keys are like "Episode_Reward/track_lin_vel_xy_exp"
+            if key.startswith("Episode_Reward/"):
+                term_name = key.replace("Episode_Reward/", "")
+                if term_name not in self.reward_stats["reward_term_sums"]:
+                    self.reward_stats["reward_term_sums"][term_name] = 0.0
+                # Add the episode reward sum for the reset environments
+                # value is the mean reward across reset environments, multiply by count
+                if isinstance(value, torch.Tensor):
+                    reward_value = value.item()
+                else:
+                    reward_value = float(value)
+                self.reward_stats["reward_term_sums"][term_name] += reward_value * len(env_ids)
         # -- constraints manager
         if hasattr(self.cfg, "constraints"):
             info = self.constraint_manager.reset(env_ids)
@@ -277,20 +312,57 @@ class CaTEnv(ManagerBasedRLEnv):
         self.episode_length_buf[env_ids] = 0
     
     def close(self):
-        """Save final termination stats before closing the environment."""
+        """Save final termination stats and reward stats before closing the environment."""
         if hasattr(self, 'summary_stats'):
             # 保存最终摘要
             self.summary_stats["end_time"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             self.summary_stats["final_step"] = self.common_step_counter
+            
+            # Add reward statistics to summary
+            if hasattr(self, 'reward_stats'):
+                # Calculate contribution percentage for each reward term
+                total_abs_reward = sum(abs(v) for v in self.reward_stats["reward_term_sums"].values())
+                if total_abs_reward > 0:
+                    for term_name, term_sum in self.reward_stats["reward_term_sums"].items():
+                        contribution = (abs(term_sum) / total_abs_reward) * 100
+                        self.reward_stats["reward_term_contributions"][term_name] = contribution
+                
+                self.summary_stats["reward_stats"] = self.reward_stats
+            
             with open(self.summary_file, 'w') as f:
                 json.dump(self.summary_stats, f, indent=2)
             
             print(f"\n[INFO] Termination logs saved to: {self.log_file}")
             print(f"[INFO] Summary stats saved to: {self.summary_file}")
+            
+            # Print termination reason summary
             print(f"\n[INFO] Termination Reason Summary:")
             print(f"  Total resets: {self.summary_stats['total_resets']}")
             for reason, count in sorted(self.summary_stats['termination_counts'].items(), 
                                        key=lambda x: x[1], reverse=True):
                 print(f"  {reason}: {count} occurrences")
+            
+            # Print reward summary
+            if hasattr(self, 'reward_stats'):
+                print(f"\n[INFO] Reward Summary:")
+                print(f"  Total reward accumulated: {self.reward_stats['total_reward']:.2f}")
+                print(f"\n[INFO] Reward Term Contributions:")
+                
+                # Sort by absolute contribution
+                sorted_rewards = sorted(
+                    self.reward_stats["reward_term_sums"].items(),
+                    key=lambda x: abs(x[1]),
+                    reverse=True
+                )
+                
+                for term_name, term_sum in sorted_rewards:
+                    count = self.reward_stats["reward_term_counts"][term_name]
+                    contribution = self.reward_stats["reward_term_contributions"].get(term_name, 0.0)
+                    avg_reward = term_sum / count if count > 0 else 0.0
+                    print(f"  {term_name}:")
+                    print(f"    Total: {term_sum:.4f}")
+                    print(f"    Triggered: {count} times")
+                    print(f"    Average: {avg_reward:.6f}")
+                    print(f"    Contribution: {contribution:.2f}%")
         
         super().close()

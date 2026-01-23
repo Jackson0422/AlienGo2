@@ -78,3 +78,14 @@ Please cite this work as:
       year={2024}
 }
 ```
+
+python scripts/rl_games/train.py \
+  --task=Isaac-Velocity-CaT-Flat-AlienGo-v0 \
+  --num_envs=8192 \
+  --headless
+
+python scripts/rl_games/play.py --task=Isaac-Velocity-CaT-Flat-AlienGo-Play-v0 --headless --video --video_length 200
+
+tensorboard --logdir=/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat --port=6006
+
+http://localhost:6006
