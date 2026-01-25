@@ -55,7 +55,7 @@ params:
     save_intermediate_freq: 4000
 
     ppo: True
-    mixed_precision: True
+    mixed_precision: False
     normalize_input: True
     normalize_value: True
     value_bootstrap: True
@@ -65,12 +65,12 @@ params:
     normalize_advantage: True
     gamma: 0.99
     tau: 0.95
-    learning_rate: 3.e-4 # overwritten by adaptive lr_schedule
+    learning_rate: 1.0e-4 # overwritten by adaptive lr_schedule
     lr_schedule: adaptive
     # schedule_type: legacy
     kl_threshold: 0.016 # target kl for adaptive lr
-    grad_norm: 1.0
-    entropy_coef: 0.01
+    grad_norm: 0.5
+    entropy_coef: 0.001
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 48 # 24 for t = 0.02 (decimation = 4)

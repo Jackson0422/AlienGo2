@@ -72,6 +72,10 @@ class CaTEnv(ManagerBasedRLEnv):
         
         print(f"[INFO] Reward tracking initialized")
 
+        # -- NaN/Inf debug logging (minimal, only first few occurrences)
+        self.nan_log_file = self.log_dir / f"nan_debug_{timestamp}.jsonl"
+        self.nan_log_count = 0
+
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics and reset terminated environments.
 
@@ -92,6 +96,15 @@ class CaTEnv(ManagerBasedRLEnv):
             A tuple containing the observations, rewards, resets (terminated and truncated) and extras.
         """
         # process actions
+        if self.nan_log_count < 10 and not torch.isfinite(action).all():
+            with open(self.nan_log_file, "a") as f:
+                f.write(json.dumps({
+                    "tag": "action",
+                    "step": self.common_step_counter,
+                    "min": float(torch.nan_to_num(action, nan=0.0).min().item()),
+                    "max": float(torch.nan_to_num(action, nan=0.0).max().item()),
+                }) + "\n")
+            self.nan_log_count += 1
         self.action_manager.process_action(action.to(self.device))
 
         self.recorder_manager.record_pre_step()
@@ -199,6 +212,16 @@ class CaTEnv(ManagerBasedRLEnv):
         # -- track reward statistics  
         # Track total reward
         self.reward_stats["total_reward"] += self.reward_buf.sum().item()
+
+        if self.nan_log_count < 10 and not torch.isfinite(self.reward_buf).all():
+            with open(self.nan_log_file, "a") as f:
+                f.write(json.dumps({
+                    "tag": "reward_buf",
+                    "step": self.common_step_counter,
+                    "min": float(torch.nan_to_num(self.reward_buf, nan=0.0).min().item()),
+                    "max": float(torch.nan_to_num(self.reward_buf, nan=0.0).max().item()),
+                }) + "\n")
+            self.nan_log_count += 1
         
         # Count steps for all environments
         for term_name in self.reward_manager.active_terms:
@@ -239,6 +262,30 @@ class CaTEnv(ManagerBasedRLEnv):
         # -- compute observations
         # note: done after reset to get the correct observations for reset envs
         self.obs_buf = self.observation_manager.compute()
+
+        if self.nan_log_count < 10:
+            if isinstance(self.obs_buf, dict):
+                for obs_key, obs_val in self.obs_buf.items():
+                    if torch.is_tensor(obs_val) and not torch.isfinite(obs_val).all():
+                        with open(self.nan_log_file, "a") as f:
+                            f.write(json.dumps({
+                                "tag": f"obs_buf:{obs_key}",
+                                "step": self.common_step_counter,
+                                "min": float(torch.nan_to_num(obs_val, nan=0.0).min().item()),
+                                "max": float(torch.nan_to_num(obs_val, nan=0.0).max().item()),
+                            }) + "\n")
+                        self.nan_log_count += 1
+                        if self.nan_log_count >= 10:
+                            break
+            elif torch.is_tensor(self.obs_buf) and not torch.isfinite(self.obs_buf).all():
+                with open(self.nan_log_file, "a") as f:
+                    f.write(json.dumps({
+                        "tag": "obs_buf",
+                        "step": self.common_step_counter,
+                        "min": float(torch.nan_to_num(self.obs_buf, nan=0.0).min().item()),
+                        "max": float(torch.nan_to_num(self.obs_buf, nan=0.0).max().item()),
+                    }) + "\n")
+                self.nan_log_count += 1
 
         # return observations, rewards, resets and extras
         return self.obs_buf, self.reward_buf, dones, self.reset_time_outs, self.extras
