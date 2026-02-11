@@ -332,7 +332,7 @@ class RewardsCfg:
     # Penalize angular velocity in roll and pitch - very low weight to allow balance adjustments
     ang_vel_xy_l2 = RewTerm(
         func=mdp.ang_vel_xy_l2,
-        weight=-0.02,  # Much lower than before (-0.1) to allow balance
+        weight=-0.4,  # Much lower than before (-0.1) to allow balance
     )
 
     # Front feet contact penalty (smoother version)
