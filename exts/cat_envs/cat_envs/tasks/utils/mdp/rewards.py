@@ -112,3 +112,81 @@ def front_feet_contact_penalty_smooth(
     gate = torch.sigmoid((h - min_height - 0.025) / 0.01)
     
     return penalty * gate
+
+def standing_time_bonus_exponential(
+    env: ManagerBasedRLEnv,
+    min_height: float,
+    max_height: float,
+    max_front_foot_contact: float,
+    alpha: float = 2.0,  # 最大额外奖励
+    tau: float = 2.0,    # 时间常数（秒）
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+) -> torch.Tensor:
+    """
+    指数增长的站立时间奖励: f(t) = 1 + α * (1 - exp(-t/τ))
+    
+    连续站立越久，奖励越大，但有上限 (1 + α)。
+    
+    Args:
+        env: 环境
+        min_height: 最小高度阈值
+        max_height: 最大高度阈值
+        max_front_foot_contact: 前脚最大接触力阈值
+        alpha: 最大额外奖励（建议 1.0-5.0）
+        tau: 时间常数，控制增长速度（建议 1.0-3.0秒）
+        asset_cfg: 机器人配置
+        contact_cfg: 接触传感器配置
+    
+    Returns:
+        奖励张量，范围 [0, 1 + α]
+        - 不满足条件: 0
+        - 刚满足条件: 1
+        - 长时间站立: 逐渐增长到 1 + α
+    
+    Example:
+        alpha=2.0, tau=2.0:
+        - t=0s:  reward=1.0
+        - t=1s:  reward=1.79
+        - t=2s:  reward=2.26
+        - t=5s:  reward=2.84
+        - t→∞:   reward=3.0
+    """
+    
+    # 1. 检查高度条件
+    asset = env.scene[asset_cfg.name]
+    current_height = asset.data.root_pos_w[:, 2]
+    height_ok = (current_height >= min_height) & (current_height <= max_height)
+    
+    # 2. 检查前脚离地条件
+    contact_sensor = env.scene[contact_cfg.name]
+    front_foot_ids = contact_cfg.body_ids
+    forces = contact_sensor.data.net_forces_w_history[:, -1, front_foot_ids]  # (N, num_feet, 3)
+    norms = torch.norm(forces, dim=-1)  # (N, num_feet)
+    max_contact_force = norms.max(dim=1)[0]  # (N,) - 取最大接触力
+    front_feet_ok = max_contact_force < max_front_foot_contact
+    
+    # 3. 综合条件
+    standing_condition = height_ok & front_feet_ok
+    
+    # 4. 更新计时器
+    # 需要在环境中维护 standing_timer，如果不存在则初始化
+    if not hasattr(env, 'standing_timer'):
+        env.standing_timer = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    
+    # 满足条件：累加时间；不满足：清零
+    dt = env.physics_dt * env.cfg.decimation  # 每步的实际时间
+    env.standing_timer = torch.where(
+        standing_condition,
+        env.standing_timer + dt,
+        torch.zeros_like(env.standing_timer)
+    )
+    
+    # 5. 计算指数奖励 f(t) = 1 + α * (1 - exp(-t/τ))
+    t = env.standing_timer
+    reward = 1.0 + alpha * (1.0 - torch.exp(-t / tau))
+    
+    # 6. 不满足条件时奖励为 0
+    reward = torch.where(standing_condition, reward, torch.zeros_like(reward))
+    
+    return reward

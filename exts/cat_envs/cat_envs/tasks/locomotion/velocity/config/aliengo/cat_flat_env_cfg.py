@@ -275,21 +275,37 @@ class RewardsCfg:
     # This provides gradient at every step, avoiding "plateau problem"
     height_progress = RewTerm(
         func=custom_rewards.base_height_progress,
-        weight=2.0,  # Main driving force for standing up
+        weight=1.5, #Main driving force for standing up
         params={
             "h0": 0.40,  # Starting height (quadruped stance)
             "h1": 0.65,  # Target height (biped stance)
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    
+
+
     # Bonus reward when reaching target height
     upright_alive = RewTerm(
         func=custom_rewards.base_height_above,
-        weight=1.0,  # Large bonus for achieving biped stance
+        weight=2.0,  # Large bonus for achieving biped stance
         params={
             "min_height": 0.65,
             "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+
+    # Bonus reward for standing duration
+    standing_duration_bonus = RewTerm(
+        func=custom_rewards.standing_time_bonus_exponential,
+        weight=2.5,  # 高权重，鼓励长时间站立
+        params={
+            "min_height": 0.60,  # 高度范围下限
+            "max_height": 0.65, # 高度范围上限
+            "max_front_foot_contact": 5.0,  # 前腿接触力阈值
+            "alpha": 2.0,  # ✅ 添加：最大额外奖励
+            "tau": 2.0,    # 时间常数（秒）
+            "asset_cfg": SceneEntityCfg("robot"),
+            "contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),  # ✅ 添加这行
         },
     )
 
@@ -332,13 +348,13 @@ class RewardsCfg:
     # Penalize angular velocity in roll and pitch - very low weight to allow balance adjustments
     ang_vel_xy_l2 = RewTerm(
         func=mdp.ang_vel_xy_l2,
-        weight=-0.4,  # Much lower than before (-0.1) to allow balance
+        weight=-0.2,  # Much lower than before (-0.1) to allow balance
     )
 
     # Front feet contact penalty (smoother version)
     front_feet_contact_penalty = RewTerm(
         func=custom_rewards.front_feet_contact_penalty_smooth,
-        weight=-0.3,  # Reduced from -0.02 to allow height_progress to dominate
+        weight=-1.0,  # Reduced from -0.02 to allow height_progress to dominate
         params={
             "contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
             "robot_cfg": SceneEntityCfg("robot"),
@@ -444,10 +460,10 @@ class ConstraintsCfg:
 
     air_time = ConstraintTerm(
         func=constraints.air_time,
-        max_p=0.25,
+        max_p=0.75,
         params={
-            "limit": 0.35, 
-            "velocity_deadzone": 0.1,
+            "limit": 0.05, 
+            "velocity_deadzone": 0.0,
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])},
     )
 
@@ -466,7 +482,7 @@ class ConstraintsCfg:
         max_p=0.25,
         params={
             "number_of_desired_feet": 2,
-            "min_command_value": 0.2,
+            "min_command_value": 0.0,
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])
         },
     )

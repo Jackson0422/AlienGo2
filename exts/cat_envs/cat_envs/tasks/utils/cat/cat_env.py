@@ -72,6 +72,16 @@ class CaTEnv(ManagerBasedRLEnv):
         
         print(f"[INFO] Reward tracking initialized")
 
+        # ========== 在这里添加（第 73 行之后）==========
+        # Initialize standing timer for time-based rewards
+        self.standing_timer = torch.zeros(
+            self.num_envs, 
+            device=self.device, 
+            dtype=torch.float32
+        )
+        print(f"[INFO] Standing timer initialized for {self.num_envs} environments")
+        # ============================================
+
         # -- NaN/Inf debug logging (minimal, only first few occurrences)
         self.nan_log_file = self.log_dir / f"nan_debug_{timestamp}.jsonl"
         self.nan_log_count = 0
@@ -357,6 +367,12 @@ class CaTEnv(ManagerBasedRLEnv):
 
         # reset the episode length buffer
         self.episode_length_buf[env_ids] = 0
+
+        # ========== 在这里添加 ==========
+        # Reset standing timer for reward calculation
+        if hasattr(self, 'standing_timer'):
+            self.standing_timer[env_ids] = 0.0
+        # ================================
     
     def close(self):
         """Save final termination stats and reward stats before closing the environment."""
