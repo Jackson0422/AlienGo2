@@ -120,6 +120,7 @@ def standing_time_bonus_exponential(
     max_front_foot_contact: float,
     alpha: float = 2.0,  # 最大额外奖励
     tau: float = 2.0,    # 时间常数（秒）
+    delay: float = 0.0,  # ✅ 新增：延迟时间（秒）
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
 ) -> torch.Tensor:
@@ -184,9 +185,15 @@ def standing_time_bonus_exponential(
     
     # 5. 计算指数奖励 f(t) = 1 + α * (1 - exp(-t/τ))
     t = env.standing_timer
-    reward = 1.0 + alpha * (1.0 - torch.exp(-t / tau))
     
-    # 6. 不满足条件时奖励为 0
-    reward = torch.where(standing_condition, reward, torch.zeros_like(reward))
+    effective_time = torch.clamp(t - delay, min=0.0)  # 减去延迟时间
+    reward = 1.0 + alpha * (1.0 - torch.exp(-effective_time / tau))
+    
+    # 6. 只有站立时间超过延迟才给奖励
+    reward = torch.where(
+        standing_condition & (t >= delay),  # ✅ 必须满足条件且超过延迟
+        reward,
+        torch.zeros_like(reward)
+    )
     
     return reward
