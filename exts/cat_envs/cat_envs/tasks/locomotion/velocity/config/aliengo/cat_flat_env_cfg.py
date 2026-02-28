@@ -99,13 +99,13 @@ class CommandsCfg:
     base_velocity = commands.UniformVelocityCommandWithDeadzoneCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
-        rel_standing_envs=0.5,
+        rel_standing_envs=1.0,
         rel_heading_envs=1.0,
         heading_command=False,
         debug_vis=True,
-        velocity_deadzone=0.1,
+        velocity_deadzone=1.0,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.0, 0.3), lin_vel_y=(0.0, 0.0), ang_vel_z=(0.0, 0.0) # (-0.78, 0.78) is the default target velocity range for the robot
+            lin_vel_x=(0.0, 0.0), lin_vel_y=(0.0, 0.0), ang_vel_z=(0.0, 0.0) # (-0.78, 0.78) is the default target velocity range for the robot
         ),
     )
 
@@ -259,7 +259,7 @@ class RewardsCfg:
     # -- task: velocity tracking (minimal weight for standing task)
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp,
-        weight=0.01,  # Reduced from 0.1 - we want standing, not walking
+        weight=0.0,  # Reduced from 0.1 - we want standing, not walking
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     
@@ -275,11 +275,14 @@ class RewardsCfg:
     # This provides gradient at every step, avoiding "plateau problem"
     height_progress = RewTerm(
         func=custom_rewards.base_height_progress,
-        weight=1.0, #Main driving force for standing up
+        weight=1.5,
         params={
-            "h0": 0.40,  # Starting height (quadruped stance)
-            "h1": 0.70,  # Target height (biped stance)
+            "h0": 0.40,
+            "h1": 0.70,
+            "max_front_contact": 1.0,
             "asset_cfg": SceneEntityCfg("robot"),
+            "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+            "rear_contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
         },
     )
 
@@ -297,83 +300,96 @@ class RewardsCfg:
     # Bonus reward for standing duration
     standing_duration_bonus = RewTerm(
         func=custom_rewards.standing_time_bonus_exponential,
-        weight=2.5,  # 高权重，鼓励长时间站立
+        weight=1.0,
         params={
-            "min_height": 0.60,  # 高度范围下限
-            "max_height": 0.70, # 高度范围上限
-            "max_front_foot_contact": 1.0,  # 前腿接触力阈值
-            "alpha": 2.0,  # ✅ 添加：最大额外奖励
-            "tau": 2.0,    # 时间常数（秒）
-            "delay": 0.5,  # 延迟时间（秒）
+            "min_height": 0.60,
+            "max_height": 0.70,
+            "max_front_foot_contact": 1.0,
+            "alpha": 2.0,
+            "tau": 2.0,
+            "delay": 0.5,
             "asset_cfg": SceneEntityCfg("robot"),
-            "contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),  # ✅ 添加这行
+            "contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+            "rear_contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
         },
     )
 
-    # Fine-tune height with L2 penalty
-    # base_height = RewTerm(
-    #     func=mdp.base_height_l2,
-    #     weight=-0.5,  # Reduced from -2.0 to allow height_progress to dominate
+    # (A) 机身直立 - 重力向量一致性 Upright fuselage - Consistent gravity vector
+    # upright_gravity = RewTerm(
+    #     func=custom_rewards.upright_gravity_alignment,
+    #     weight=1.5,
     #     params={
-    #         "target_height": 0.70,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         },
-    # )
-
-    # Alternative height reward (disabled - height_progress is better)
-    # height_in_range = RewTerm(
-    #     func=custom_rewards.base_height_in_range,
-    #     weight=5.0,
-    #     params={
-    #         "target_height": 0.65,
-    #         "tolerance": 0.05,
+    #         "k_o": 5.0,
+    #         "target_pitch_deg": 75.0,  # 75.0 is the default target pitch degree for the robot
     #         "asset_cfg": SceneEntityCfg("robot"),
     #     },
     # )
-    
-    # ============ Stability and Smoothness ============
-    
-    # Keep body orientation flat (minimize roll and pitch)
-    # flat_orientation_l2 = RewTerm(
-    #     func=mdp.flat_orientation_l2,
-    #     weight=-0.2,  # Increased from -0.1 to encourage upright posture
-    # )
-    
-    # -- Smoothness rewards: stable motion
-    # Penalize vertical velocity (jumping/falling) - very low weight to allow standing motion
-    # lin_vel_z_l2 = RewTerm(
-    #     func=mdp.lin_vel_z_l2,
-    #     weight=-0.2,  # Much lower than before (-0.25) to allow standing up
-    # )
-    
-    # Penalize angular velocity in roll and pitch - very low weight to allow balance adjustments
-    # ang_vel_xy_l2 = RewTerm(
-    #     func=mdp.ang_vel_xy_l2,
-    #     weight=-0.2,  # Much lower than before (-0.1) to allow balance
-    # )
 
-    # Front feet contact penalty (smoother version)
-    # front_feet_contact_penalty = RewTerm(
-    #     func=custom_rewards.front_feet_contact_penalty_smooth,
-    #     weight=-1.0,  # Reduced from -0.02 to allow height_progress to dominate
-    #     params={
-    #         "contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
-    #         "robot_cfg": SceneEntityCfg("robot"),
-    #         "min_height": 0.55,
-    #         "threshold": 10.0,
-    #     },
-    # )
+    # (B) Roll 稳定 - 抑制侧翻 Roll stability - inhibits rollover
+    roll_stable = RewTerm(
+        func=custom_rewards.roll_stability,
+        weight=0.3,
+        params={
+            "k_r": 10.0,
+            "min_height": 0.60,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+
+    # (C) CoM-CoP 水平对齐 - 平衡核心 CoM-CoP Horizontal Alignment - Balanced Core
+    com_cop_align = RewTerm(
+        func=custom_rewards.com_cop_progress,
+        weight=1.5,
+        params={
+            "d_max": 0.20,
+            "min_height": 0.60,
+            "max_front_contact": 1.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "foot_cfg": SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
+            "contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+            "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+        },
+    )
+
+    # (D) CoP 居中 - 后足负载均衡  CoP Centering - Rear Foot Load Balancing
+    cop_center = RewTerm(
+        func=custom_rewards.cop_midpoint,
+        weight=1.5,
+        params={
+            "k_cop": 50.0,
+            "min_height": 0.60,
+            "max_front_contact": 1.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "foot_cfg": SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
+            "contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+            "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+        },
+    )
+
 
 
 @configclass
 class ConstraintsCfg:
     # Safety Soft constraints
-    joint_torque = ConstraintTerm(
+    joint_torque_hip_thigh = ConstraintTerm(
         func=constraints.joint_torque,
         max_p=0.25,
-        params={"limit": 60.0,  # 3.0 is the default limit for the robot
-                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint", ".*_calf_joint"])},
+        params={
+            "limit": 20.0,  # ✅ Hip 和 Thigh  20 N·m
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint"])
+        },
     )
+
+    # Calf limitation
+    joint_torque_calf = ConstraintTerm(
+        func=constraints.joint_torque,
+        max_p=0.25,
+        params={
+            "limit": 16.0,  # ✅ Calf 16 N·m
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])
+        },
+    )
+
     joint_velocity = ConstraintTerm(
         func=constraints.joint_velocity,
         max_p=0.25,
@@ -412,7 +428,7 @@ class ConstraintsCfg:
     # 前脚不应该有接触力（直立时应悬空）
     front_foot_contact = ConstraintTerm(
         func=constraints.contact,  # 使用接触约束，不允许接触
-        max_p=1.0, # 1.0 is the default max_p for the contact constraint
+        max_p = 0.5, # 1.0 is the default max_p for the contact constraint
         params={
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"])
         },
@@ -423,7 +439,7 @@ class ConstraintsCfg:
         func=constraints.foot_contact_force,
         max_p=1.0,
         params={
-            "limit": 450.0,  # 后脚需要承受更大的力
+            "limit": 250.0,  # 后脚需要承受更大的力
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])
         },
     )
@@ -451,19 +467,19 @@ class ConstraintsCfg:
             "velocity_deadzone": 0.1,
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"])},
     )
-    base_orientation = ConstraintTerm(
-        func=constraints.base_orientation, 
-        max_p=0.25, 
-        params={
-            "limit": 0.5,  # 0.26 is the default limit for the robot
-            "asset_cfg": SceneEntityCfg("robot")}
-    )
+    # base_orientation = ConstraintTerm(
+    #     func=constraints.base_orientation, 
+    #     max_p=0.25, 
+    #     params={
+    #         "limit": 0.5,  # 0.26 is the default limit for the robot
+    #         "asset_cfg": SceneEntityCfg("robot")}
+    # )
 
     air_time = ConstraintTerm(
         func=constraints.air_time,
-        max_p=0.75,
+        max_p=0.25,
         params={
-            "limit": 0.05, 
+            "limit": 0.1, 
             "velocity_deadzone": 0.0,
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])},
     )
@@ -480,7 +496,7 @@ class ConstraintsCfg:
 
     one_foot_contact = ConstraintTerm(
         func=constraints.n_foot_contact,
-        max_p=0.25,
+        max_p=1.0,
         params={
             "number_of_desired_feet": 2,
             "min_command_value": 0.0,
@@ -548,14 +564,33 @@ MAX_CURRICULUM_ITERATIONS = 1000
 @configclass
 class CurriculumCfg:
     # Safety Soft constraints
-    joint_torque = CurrTerm(
+    # joint_torque = CurrTerm(
+    #     func=curriculums.modify_constraint_p,
+    #     params={
+    #         "term_name": "joint_torque",
+    #         "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+    #         "init_max_p": 0.25,
+    #     },
+    # )
+
+    joint_torque_hip_thigh = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
-            "term_name": "joint_torque",
+            "term_name": "joint_torque_hip_thigh",  # ✅ 新的约束项名称
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
             "init_max_p": 0.25,
         },
     )
+    
+    joint_torque_calf = CurrTerm(
+        func=curriculums.modify_constraint_p,
+        params={
+            "term_name": "joint_torque_calf",  # ✅ 新的约束项名称
+            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+            "init_max_p": 0.25,
+        },
+    )
+
     joint_velocity = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
@@ -590,14 +625,14 @@ class CurriculumCfg:
             "init_max_p": 0.03, # 0.25 is the default init_max_p for the hip position constraint
         },
     )
-    base_orientation = CurrTerm(
-        func=curriculums.modify_constraint_p,
-        params={
-            "term_name": "base_orientation",
-            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
-            "init_max_p": 0.25,
-        },
-    )
+    # base_orientation = CurrTerm(
+    #     func=curriculums.modify_constraint_p,
+    #     params={
+    #         "term_name": "base_orientation",
+    #         "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+    #         "init_max_p": 0.25,
+    #     },
+    # )
     air_time = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
@@ -622,6 +657,100 @@ class CurriculumCfg:
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,  # 更长的渐进时间
             "init_max_p": 0.01,  # 初始不惩罚
             # 最终会到达 max_p=1.0（ConstraintsCfg 中设置的初始值）
+        },
+    )
+
+    standing_min_height = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "standing_duration_bonus",
+            "param_name": "min_height",
+            "start_value": 0.45,
+            "end_value": 0.60,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    # standing_duration_bonus: max_front_foot_contact 100 -> 1
+    standing_max_front = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "standing_duration_bonus",
+            "param_name": "max_front_foot_contact",
+            "start_value": 100.0,
+            "end_value": 1.0,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    # com_cop_align: min_height 0.45 -> 0.60
+    com_cop_min_height = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "com_cop_align",
+            "param_name": "min_height",
+            "start_value": 0.45,
+            "end_value": 0.60,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    # com_cop_align: max_front_contact 100 -> 1
+    com_cop_max_front = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "com_cop_align",
+            "param_name": "max_front_contact",
+            "start_value": 100.0,
+            "end_value": 1.0,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    # cop_center: 同理
+    cop_center_min_height = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "cop_center",
+            "param_name": "min_height",
+            "start_value": 0.45,
+            "end_value": 0.60,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    cop_center_max_front = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "cop_center",
+            "param_name": "max_front_contact",
+            "start_value": 100.0,
+            "end_value": 1.0,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    # height_progress: max_front_contact 100 -> 1
+    height_progress_max_front = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "height_progress",
+            "param_name": "max_front_contact",
+            "start_value": 100.0,
+            "end_value": 1.0,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    # roll_stable: min_height 0.45 -> 0.60
+    roll_stable_min_height = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "roll_stable",
+            "param_name": "min_height",
+            "start_value": 0.45,
+            "end_value": 0.60,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
     )
 

@@ -82,6 +82,23 @@ class CaTEnv(ManagerBasedRLEnv):
         print(f"[INFO] Standing timer initialized for {self.num_envs} environments")
         # ============================================
 
+        # -- contact force logging (every step, JSONL)
+        self.contact_log_dir = Path(os.path.expanduser("~")) / "contact_force_logs"
+        self.contact_log_dir.mkdir(exist_ok=True)
+        self.contact_log_file = self.contact_log_dir / f"contact_forces_{timestamp}.jsonl"
+        from isaaclab.managers import SceneEntityCfg
+        _fl = SceneEntityCfg("contact_forces", body_names=["FL_calf"])
+        _fr = SceneEntityCfg("contact_forces", body_names=["FR_calf"])
+        _rl = SceneEntityCfg("contact_forces", body_names=["RL_calf"])
+        _rr = SceneEntityCfg("contact_forces", body_names=["RR_calf"])
+        _fl.resolve(self.scene); _fr.resolve(self.scene)
+        _rl.resolve(self.scene); _rr.resolve(self.scene)
+        self._contact_ids = {
+            "FL": _fl.body_ids, "FR": _fr.body_ids,
+            "RL": _rl.body_ids, "RR": _rr.body_ids,
+        }
+        print(f"[INFO] Contact force logs will be saved to: {self.contact_log_file}")
+
         # -- NaN/Inf debug logging (minimal, only first few occurrences)
         self.nan_log_file = self.log_dir / f"nan_debug_{timestamp}.jsonl"
         self.nan_log_count = 0
@@ -297,6 +314,17 @@ class CaTEnv(ManagerBasedRLEnv):
                     }) + "\n")
                 self.nan_log_count += 1
 
+        # -- log contact forces every step
+        _cs = self.scene["contact_forces"]
+        _f = _cs.data.net_forces_w_history[:, -1, :]
+        _entry = {"step": self.common_step_counter}
+        for _name, _ids in self._contact_ids.items():
+            _n = torch.norm(_f[:, _ids, :], dim=-1)
+            _entry[f"{_name}_mean"] = round(_n.mean().item(), 1)
+            _entry[f"{_name}_max"] = round(_n.max().item(), 1)
+        with open(self.contact_log_file, 'a') as _cf:
+            _cf.write(json.dumps(_entry) + '\n')
+
         # return observations, rewards, resets and extras
         return self.obs_buf, self.reward_buf, dones, self.reset_time_outs, self.extras
 
@@ -373,6 +401,10 @@ class CaTEnv(ManagerBasedRLEnv):
         if hasattr(self, 'standing_timer'):
             self.standing_timer[env_ids] = 0.0
         # ================================
+
+        # Reset pitch timer for reward calculation
+        if hasattr(self, 'pitch_timer'):
+            self.pitch_timer[env_ids] = 0.0
     
     def close(self):
         """Save final termination stats and reward stats before closing the environment."""
