@@ -235,3 +235,27 @@ def no_move(
         < velocity_deadzone
     ).float().unsqueeze(1)
     return cstr_nomove
+
+def min_foot_contact(
+    env: ManagerBasedRLEnv,
+    min_feet: int,
+    min_command_value: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    contact_sensor = env.scene[asset_cfg.name]
+    net_contact_forces = contact_sensor.data.net_forces_w_history
+    num_contact = (
+        torch.max(
+            torch.norm(net_contact_forces[:, :, asset_cfg.body_ids], dim=-1),
+            dim=1,
+        )[0]
+        > 1.0
+    ).sum(1)
+    
+    shortfall = (min_feet - num_contact).clamp(min=0.0)
+    
+    command_more_than_limit = (
+        torch.norm(env.command_manager.get_command("base_velocity")[:, :3], dim=1)
+        > min_command_value
+    ).float()
+    return shortfall * command_more_than_limit

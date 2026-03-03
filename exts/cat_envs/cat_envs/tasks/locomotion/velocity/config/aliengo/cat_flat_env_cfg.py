@@ -273,16 +273,26 @@ class RewardsCfg:
     
     # Continuous height progress: encourages exploration from 0.35m to 0.65m
     # This provides gradient at every step, avoiding "plateau problem"
-    height_progress = RewTerm(
-        func=custom_rewards.base_height_progress,
-        weight=1.5,
+    # height_progress = RewTerm(
+    #     func=custom_rewards.base_height_progress,
+    #     weight=1.5,
+    #     params={
+    #         "h0": 0.40,
+    #         "h1": 0.60,
+    #         "max_front_contact": 1.0,
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+    #         "rear_contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+    #     },
+    # )
+
+    height_maintenance = RewTerm(
+        func=custom_rewards.height_maintenance,
+        weight=2.0,
         params={
-            "h0": 0.40,
-            "h1": 0.70,
-            "max_front_contact": 1.0,
+            "target_height": 0.60,
+            "sigma": 0.05,
             "asset_cfg": SceneEntityCfg("robot"),
-            "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
-            "rear_contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
         },
     )
 
@@ -292,7 +302,7 @@ class RewardsCfg:
         func=custom_rewards.base_height_above,
         weight=1.0,  # Large bonus for achieving biped stance
         params={
-            "min_height": 0.70,
+            "min_height": 0.60,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -302,8 +312,8 @@ class RewardsCfg:
         func=custom_rewards.standing_time_bonus_exponential,
         weight=1.0,
         params={
-            "min_height": 0.60,
-            "max_height": 0.70,
+            "min_height": 0.50,
+            "max_height": 0.60,
             "max_front_foot_contact": 1.0,
             "alpha": 2.0,
             "tau": 2.0,
@@ -331,7 +341,7 @@ class RewardsCfg:
         weight=0.3,
         params={
             "k_r": 10.0,
-            "min_height": 0.60,
+            "min_height": 0.50,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -341,8 +351,8 @@ class RewardsCfg:
         func=custom_rewards.com_cop_progress,
         weight=1.5,
         params={
-            "d_max": 0.20,
-            "min_height": 0.60,
+            "d_max": 0.30,
+            "min_height": 0.50,
             "max_front_contact": 1.0,
             "asset_cfg": SceneEntityCfg("robot"),
             "foot_cfg": SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
@@ -354,10 +364,10 @@ class RewardsCfg:
     # (D) CoP 居中 - 后足负载均衡  CoP Centering - Rear Foot Load Balancing
     cop_center = RewTerm(
         func=custom_rewards.cop_midpoint,
-        weight=1.5,
+        weight=1.0,
         params={
             "k_cop": 50.0,
-            "min_height": 0.60,
+            "min_height": 0.50,
             "max_front_contact": 1.0,
             "asset_cfg": SceneEntityCfg("robot"),
             "foot_cfg": SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
@@ -495,10 +505,10 @@ class ConstraintsCfg:
     # )
 
     one_foot_contact = ConstraintTerm(
-        func=constraints.n_foot_contact,
+        func=constraints.min_foot_contact,
         max_p=1.0,
         params={
-            "number_of_desired_feet": 2,
+            "min_feet": 1,
             "min_command_value": 0.0,
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])
         },
@@ -666,7 +676,7 @@ class CurriculumCfg:
             "term_name": "standing_duration_bonus",
             "param_name": "min_height",
             "start_value": 0.45,
-            "end_value": 0.60,
+            "end_value": 0.50,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
     )
@@ -690,7 +700,7 @@ class CurriculumCfg:
             "term_name": "com_cop_align",
             "param_name": "min_height",
             "start_value": 0.45,
-            "end_value": 0.60,
+            "end_value": 0.50,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
     )
@@ -714,7 +724,7 @@ class CurriculumCfg:
             "term_name": "cop_center",
             "param_name": "min_height",
             "start_value": 0.45,
-            "end_value": 0.60,
+            "end_value": 0.50,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
     )
@@ -731,16 +741,16 @@ class CurriculumCfg:
     )
 
     # height_progress: max_front_contact 100 -> 1
-    height_progress_max_front = CurrTerm(
-        func=curriculums.modify_reward_param,
-        params={
-            "term_name": "height_progress",
-            "param_name": "max_front_contact",
-            "start_value": 100.0,
-            "end_value": 1.0,
-            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
-        },
-    )
+    # height_progress_max_front = CurrTerm(
+    #     func=curriculums.modify_reward_param,
+    #     params={
+    #         "term_name": "height_progress",
+    #         "param_name": "max_front_contact",
+    #         "start_value": 100.0,
+    #         "end_value": 1.0,
+    #         "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+    #     },
+    # )
 
     # roll_stable: min_height 0.45 -> 0.60
     roll_stable_min_height = CurrTerm(
@@ -749,7 +759,19 @@ class CurriculumCfg:
             "term_name": "roll_stable",
             "param_name": "min_height",
             "start_value": 0.45,
-            "end_value": 0.60,
+            "end_value": 0.50,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    # com_cop_align: d_max 0.25 -> 0.30
+    com_cop_d_max = CurrTerm(
+        func = curriculums.modify_reward_param,
+        params = {
+            "term_name": "com_cop_align",
+            "param_name": "d_max",
+            "start_value": 0.30,
+            "end_value": 0.10,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
     )

@@ -9,6 +9,33 @@ from isaaclab.assets import RigidObject  # 新增：导入 RigidObject
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
+def _quat_apply_wxyz(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate vector v by quaternion q (w,x,y,z convention)."""
+    w, x, y, z = q.unbind(-1)
+    vx, vy, vz = v.unbind(-1)
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return torch.stack((
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ), dim=-1)
+
+
+_FOOT_OFFSET_LOCAL = None
+
+def _get_foot_pos_from_calf(asset, foot_cfg) -> torch.Tensor:
+    """From calf link pose, compute foot bottom position in world frame."""
+    global _FOOT_OFFSET_LOCAL
+    calf_pos_w = asset.data.body_pos_w[:, foot_cfg.body_ids, :]    # (N, 2, 3)
+    calf_quat_w = asset.data.body_quat_w[:, foot_cfg.body_ids, :]  # (N, 2, 4) wxyz
+    if _FOOT_OFFSET_LOCAL is None or _FOOT_OFFSET_LOCAL.device != calf_pos_w.device:
+        _FOOT_OFFSET_LOCAL = torch.tensor([0.0, 0.0, -0.25], device=calf_pos_w.device)
+    offset = _FOOT_OFFSET_LOCAL.view(1, 1, 3).expand_as(calf_pos_w)
+    foot_pos_w = calf_pos_w + _quat_apply_wxyz(calf_quat_w, offset)
+    return foot_pos_w
+
 def base_height_progress(
     env: ManagerBasedRLEnv,
     h0: float,
@@ -41,6 +68,8 @@ def base_height_progress(
     rear_gate = (rear_norms > 1.0).any(dim=1).float()
 
     return reward * front_gate * rear_gate
+
+
 
 def base_height_above(
     env: ManagerBasedRLEnv,
@@ -289,21 +318,23 @@ def com_cop_progress(
 ) -> torch.Tensor:
     """渐进式 CoM-CoP 对齐奖励，凸函数形状，带高度/前脚/后脚门控。"""
     asset = env.scene[asset_cfg.name]
-    com_pos = asset.data.root_com_pos_w[:, :2]
+    body_com = asset.data.body_com_pos_w                          # (N, num_bodies, 3)
+    body_mass = asset.data.default_mass.to(body_com.device)                            # (N, num_bodies)
+    total_mass = body_mass.sum(dim=1, keepdim=True)                # (N, 1)
+    whole_com = (body_com * body_mass.unsqueeze(-1)).sum(dim=1) / total_mass  # (N, 3)
+    com_pos = whole_com[:, :2]
 
     contact_sensor = env.scene[contact_cfg.name]
     forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
-    force_mag = torch.norm(forces, dim=-1, keepdim=True).clamp(min=1e-6)
+    fz = forces[..., 2:3].clamp(min=0.0)  # (N, 2, 1) 只用竖直支撑力
 
-    foot_pos = asset.data.body_pos_w[:, foot_cfg.body_ids, :2]
+    foot_pos = _get_foot_pos_from_calf(asset, foot_cfg)[..., :2]
 
-    total_force = force_mag.sum(dim=1)
-    cop_pos = (foot_pos * force_mag).sum(dim=1) / total_force.clamp(min=1e-6)
+    total_force = fz.sum(dim=1)
+    cop_pos = (foot_pos * fz).sum(dim=1) / total_force.clamp(min=1e-6)
 
     d = torch.norm(com_pos - cop_pos, dim=1)
-    progress = 1.0 - d / d_max
-    progress = torch.clamp(progress, 0.0, 1.0)
-    reward = progress ** 2
+    reward = torch.exp(-4.0 * (d / d_max) ** 2)
 
     # 门控1：高度
     h = asset.data.root_pos_w[:, 2]
@@ -316,8 +347,7 @@ def com_cop_progress(
     front_gate = (front_max < max_front_contact).float()
 
     # 门控3：至少一只后脚着地
-    rear_norms = torch.norm(forces, dim=-1)
-    rear_any_contact = (rear_norms > 1.0).any(dim=1).float()
+    rear_any_contact = (fz.squeeze(-1) > 1.0).any(dim=1).float()
 
     return reward * height_gate * front_gate * rear_any_contact
 
@@ -335,12 +365,12 @@ def cop_midpoint(
     asset = env.scene[asset_cfg.name]
     contact_sensor = env.scene[contact_cfg.name]
     forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
-    force_mag = torch.norm(forces, dim=-1, keepdim=True).clamp(min=1e-6)
+    fz = forces[..., 2:3].clamp(min=0.0)  # (N, 2, 1) 只用竖直支撑力
 
-    foot_pos = asset.data.body_pos_w[:, foot_cfg.body_ids, :2]
+    foot_pos = _get_foot_pos_from_calf(asset, foot_cfg)[..., :2]
 
-    total_force = force_mag.sum(dim=1)
-    cop_pos = (foot_pos * force_mag).sum(dim=1) / total_force.clamp(min=1e-6)
+    total_force = fz.sum(dim=1)
+    cop_pos = (foot_pos * fz).sum(dim=1) / total_force.clamp(min=1e-6)
 
     mid_pos = foot_pos.mean(dim=1)
 
@@ -358,7 +388,17 @@ def cop_midpoint(
     front_gate = (front_max < max_front_contact).float()
 
     # 门控3：至少一只后脚着地
-    rear_norms = torch.norm(forces, dim=-1)  # (N, num_feet)
-    rear_any_contact = (rear_norms > 1.0).any(dim=1).float()
+    rear_any_contact = (fz.squeeze(-1) > 1.0).any(dim=1).float()
 
     return reward * height_gate * front_gate * rear_any_contact
+
+def height_maintenance(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    sigma: float = 0.05,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Gaussian reward centered at target_height. Always provides gradient."""
+    asset = env.scene[asset_cfg.name]
+    h = asset.data.root_pos_w[:, 2]
+    return torch.exp(-((h - target_height) / sigma) ** 2)
