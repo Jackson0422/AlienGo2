@@ -259,3 +259,15 @@ def min_foot_contact(
         > min_command_value
     ).float()
     return shortfall * command_more_than_limit
+
+def height_below(
+    env: ManagerBasedRLEnv,
+    min_height: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Constraint violation when base height drops below min_height.
+    Returns (min_height - h) clamped to >= 0. Higher value = bigger violation.
+    """
+    asset = env.scene[asset_cfg.name]
+    h = asset.data.root_pos_w[:, 2]
+    return (min_height - h).clamp(min=0.0)

@@ -385,7 +385,7 @@ class ConstraintsCfg:
         func=constraints.joint_torque,
         max_p=0.25,
         params={
-            "limit": 20.0,  # ✅ Hip 和 Thigh  20 N·m
+            "limit": 35.0,  # ✅ Hip 和 Thigh  35 N·m
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint"])
         },
     )
@@ -395,16 +395,23 @@ class ConstraintsCfg:
         func=constraints.joint_torque,
         max_p=0.25,
         params={
-            "limit": 16.0,  # ✅ Calf 16 N·m
+            "limit": 45.0,  # ✅ Calf 45 N·m
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])
         },
     )
 
-    joint_velocity = ConstraintTerm(
+    joint_velocity_hip_thigh = ConstraintTerm(
         func=constraints.joint_velocity,
         max_p=0.25,
-        params={"limit": 16.0, 
-                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint", ".*_calf_joint"])},
+        params={"limit": 20.0,
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint"])},
+    )
+
+    joint_velocity_calf = ConstraintTerm(
+        func=constraints.joint_velocity,
+        max_p=0.25,
+        params={"limit": 16.0,
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])},
     )
     joint_acceleration = ConstraintTerm(
         func=constraints.joint_acceleration,
@@ -438,21 +445,21 @@ class ConstraintsCfg:
     # 前脚不应该有接触力（直立时应悬空）
     front_foot_contact = ConstraintTerm(
         func=constraints.contact,  # 使用接触约束，不允许接触
-        max_p = 0.5, # 1.0 is the default max_p for the contact constraint
+        max_p = 1.0, # 1.0 is the default max_p for the contact constraint
         params={
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"])
         },
     )
 
     # 后脚接触力限制
-    rear_foot_contact_force = ConstraintTerm(
-        func=constraints.foot_contact_force,
-        max_p=1.0,
-        params={
-            "limit": 250.0,  # 后脚需要承受更大的力
-            "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])
-        },
-    )
+    # rear_foot_contact_force = ConstraintTerm(
+    #     func=constraints.foot_contact_force,
+    #     max_p=1.0,
+    #     params={
+    #         "limit": 250.0,  # 后脚需要承受更大的力
+    #         "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])
+    #     },
+    # )
 
     # front_hfe_position = ConstraintTerm(
     #     func=constraints.joint_position,
@@ -506,11 +513,20 @@ class ConstraintsCfg:
 
     one_foot_contact = ConstraintTerm(
         func=constraints.min_foot_contact,
-        max_p=1.0,
+        max_p=0.25,
         params={
             "min_feet": 1,
             "min_command_value": 0.0,
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])
+        },
+    )
+
+    height_below = ConstraintTerm(
+        func=constraints.height_below,
+        max_p=1.0,
+        params={
+            "min_height": 0.55,
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
 
@@ -601,14 +617,24 @@ class CurriculumCfg:
         },
     )
 
-    joint_velocity = CurrTerm(
+    joint_velocity_hip_thigh = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
-            "term_name": "joint_velocity",
+            "term_name": "joint_velocity_hip_thigh",
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
             "init_max_p": 0.25,
         },
     )
+
+    joint_velocity_calf = CurrTerm(
+        func=curriculums.modify_constraint_p,
+        params={
+            "term_name": "joint_velocity_calf",
+            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+            "init_max_p": 0.25,
+        },
+    )
+
     joint_acceleration = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
@@ -665,8 +691,17 @@ class CurriculumCfg:
         params={
             "term_name": "front_foot_contact",
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,  # 更长的渐进时间
-            "init_max_p": 0.01,  # 初始不惩罚
+            "init_max_p": 0.1,  # 初始不惩罚
             # 最终会到达 max_p=1.0（ConstraintsCfg 中设置的初始值）
+        },
+    )
+
+    height_below = CurrTerm(
+        func=curriculums.modify_constraint_p,
+        params={
+            "term_name": "height_below",
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+            "init_max_p": 0.01,  # 早期几乎不惩罚
         },
     )
 
@@ -687,7 +722,7 @@ class CurriculumCfg:
         params={
             "term_name": "standing_duration_bonus",
             "param_name": "max_front_foot_contact",
-            "start_value": 100.0,
+            "start_value": 40.0,
             "end_value": 1.0,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
@@ -699,7 +734,7 @@ class CurriculumCfg:
         params={
             "term_name": "com_cop_align",
             "param_name": "min_height",
-            "start_value": 0.45,
+            "start_value": 0.40,
             "end_value": 0.50,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
@@ -711,7 +746,7 @@ class CurriculumCfg:
         params={
             "term_name": "com_cop_align",
             "param_name": "max_front_contact",
-            "start_value": 100.0,
+            "start_value": 40.0,
             "end_value": 1.0,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
@@ -734,7 +769,7 @@ class CurriculumCfg:
         params={
             "term_name": "cop_center",
             "param_name": "max_front_contact",
-            "start_value": 100.0,
+            "start_value": 40.0,
             "end_value": 1.0,
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
@@ -775,6 +810,7 @@ class CurriculumCfg:
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
         },
     )
+
 
 
 ##
