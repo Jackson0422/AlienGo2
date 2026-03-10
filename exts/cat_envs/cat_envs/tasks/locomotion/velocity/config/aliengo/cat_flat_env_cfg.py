@@ -288,7 +288,7 @@ class RewardsCfg:
 
     height_maintenance = RewTerm(
         func=custom_rewards.height_maintenance,
-        weight=2.0,
+        weight=1.5,
         params={
             "target_height": 0.60,
             "sigma": 0.05,
@@ -310,7 +310,7 @@ class RewardsCfg:
     # Bonus reward for standing duration
     standing_duration_bonus = RewTerm(
         func=custom_rewards.standing_time_bonus_exponential,
-        weight=1.0,
+        weight=1.5,
         params={
             "min_height": 0.50,
             "max_height": 0.60,
@@ -324,7 +324,7 @@ class RewardsCfg:
         },
     )
 
-    # (A) 机身直立 - 重力向量一致性 Upright fuselage - Consistent gravity vector
+    # (A) Upright fuselage - Consistent gravity vector / 机身直立 - 重力向量一致性
     # upright_gravity = RewTerm(
     #     func=custom_rewards.upright_gravity_alignment,
     #     weight=1.5,
@@ -335,18 +335,20 @@ class RewardsCfg:
     #     },
     # )
 
-    # (B) Roll 稳定 - 抑制侧翻 Roll stability - inhibits rollover
+    # (B) Roll stability - inhibits rollover / Roll 稳定 - 抑制侧翻
     roll_stable = RewTerm(
         func=custom_rewards.roll_stability,
-        weight=0.3,
+        weight=2.0,
         params={
             "k_r": 10.0,
-            "min_height": 0.50,
+            "min_height": 0.55,
+            "max_front_contact": 1.0,
             "asset_cfg": SceneEntityCfg("robot"),
+            "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
         },
     )
 
-    # (C) CoM-CoP 水平对齐 - 平衡核心 CoM-CoP Horizontal Alignment - Balanced Core
+    # (C) CoM-CoP Horizontal Alignment - Balance Core / CoM-CoP 水平对齐 - 平衡核心
     com_cop_align = RewTerm(
         func=custom_rewards.com_cop_progress,
         weight=1.5,
@@ -361,7 +363,7 @@ class RewardsCfg:
         },
     )
 
-    # (D) CoP 居中 - 后足负载均衡  CoP Centering - Rear Foot Load Balancing
+    # (D) CoP Centering - Rear Foot Load Balancing / CoP 居中 - 后足负载均衡
     cop_center = RewTerm(
         func=custom_rewards.cop_midpoint,
         weight=1.0,
@@ -385,7 +387,7 @@ class ConstraintsCfg:
         func=constraints.joint_torque,
         max_p=0.25,
         params={
-            "limit": 35.0,  # ✅ Hip 和 Thigh  35 N·m
+            "limit": 35.0,  # Hip and Thigh 35 N·m / Hip 和 Thigh 35 N·m
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint"])
         },
     )
@@ -395,7 +397,7 @@ class ConstraintsCfg:
         func=constraints.joint_torque,
         max_p=0.25,
         params={
-            "limit": 45.0,  # ✅ Calf 45 N·m
+            "limit": 45.0,  # Calf 45 N·m
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])
         },
     )
@@ -442,21 +444,21 @@ class ConstraintsCfg:
     #             "asset_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf")},
     # )
 
-    # 前脚不应该有接触力（直立时应悬空）
+    # Front feet should not have contact force (should be airborne when standing) / 前脚不应该有接触力（直立时应悬空）
     front_foot_contact = ConstraintTerm(
-        func=constraints.contact,  # 使用接触约束，不允许接触
-        max_p = 1.0, # 1.0 is the default max_p for the contact constraint
+        func=constraints.contact,  # Contact constraint, no contact allowed / 使用接触约束，不允许接触
+        max_p = 0.25, # 1.0 is the default max_p for the contact constraint
         params={
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"])
         },
     )
 
-    # 后脚接触力限制
+    # Rear foot contact force limit / 后脚接触力限制
     # rear_foot_contact_force = ConstraintTerm(
     #     func=constraints.foot_contact_force,
     #     max_p=1.0,
     #     params={
-    #         "limit": 250.0,  # 后脚需要承受更大的力
+    #         "limit": 250.0,  # Rear feet need to bear more force / 后脚需要承受更大的力
     #         "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])
     #     },
     # )
@@ -523,7 +525,7 @@ class ConstraintsCfg:
 
     height_below = ConstraintTerm(
         func=constraints.height_below,
-        max_p=1.0,
+        max_p=0.5,
         params={
             "min_height": 0.55,
             "asset_cfg": SceneEntityCfg("robot"),
@@ -538,7 +540,7 @@ class TerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
     base_contact = DoneTerm(
-        func=terminations.illegal_contact_current_frame,  # 使用自定义函数，只检测当前帧
+        func=terminations.illegal_contact_current_frame,  # Custom function, only checks current frame / 使用自定义函数，只检测当前帧
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces", body_names=["base"]
@@ -548,26 +550,26 @@ class TerminationsCfg:
     )
     
     # thigh_contact = DoneTerm(
-    #     func=terminations.illegal_contact_current_frame,  # 使用自定义函数，只检测当前帧
+    #     func=terminations.illegal_contact_current_frame,  # Custom function, only checks current frame / 使用自定义函数，只检测当前帧
     #     params={
     #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces", body_names=[".*_thigh"]  # 只检测大腿
+    #             "contact_forces", body_names=[".*_thigh"]  # Only detect thigh / 只检测大腿
     #         ),
     #         "threshold": 1.0,
     #     },
     # )
 
     base_height_low = DoneTerm(
-        func=terminations.base_height_below_consecutive,  # 使用包装函数
+        func=terminations.base_height_below_consecutive,  # Wrapper function / 使用包装函数
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "min_height": 0.30,
-            "consecutive_frames": 40,  # 连续5帧低于阈值才终止
+            "consecutive_frames": 40,  # Terminate only after 40 consecutive frames below threshold / 连续40帧低于阈值才终止
         },
     )
 
     # front_foot_contact = DoneTerm(
-    #     func=terminations.illegal_contact_current_frame,  # 使用自定义函数，只检测当前帧
+    #     func=terminations.illegal_contact_current_frame,  # Custom function, only checks current frame / 使用自定义函数，只检测当前帧
     #     params={
     #         "sensor_cfg": SceneEntityCfg(
     #             "contact_forces", body_names=["FL_calf", "FR_calf"]
@@ -602,7 +604,7 @@ class CurriculumCfg:
     joint_torque_hip_thigh = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
-            "term_name": "joint_torque_hip_thigh",  # ✅ 新的约束项名称
+            "term_name": "joint_torque_hip_thigh",  # New constraint term name / 新的约束项名称
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
             "init_max_p": 0.25,
         },
@@ -611,7 +613,7 @@ class CurriculumCfg:
     joint_torque_calf = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
-            "term_name": "joint_torque_calf",  # ✅ 新的约束项名称
+            "term_name": "joint_torque_calf",  # New constraint term name / 新的约束项名称
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
             "init_max_p": 0.25,
         },
@@ -685,14 +687,14 @@ class CurriculumCfg:
             "init_max_p": 0.25,
         },
     )
-    # 渐进式收紧前脚接触约束
+    # Progressively tighten front foot contact constraint / 渐进式收紧前脚接触约束
     front_foot_contact = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
             "term_name": "front_foot_contact",
-            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,  # 更长的渐进时间
-            "init_max_p": 0.1,  # 初始不惩罚
-            # 最终会到达 max_p=1.0（ConstraintsCfg 中设置的初始值）
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,  # Longer progression time / 更长的渐进时间
+            "init_max_p": 0.25,  # Low initial penalty / 初始低惩罚
+            # Final max_p is determined by init_max_p (see modify_constraint_p) / 最终 max_p 由 init_max_p 决定
         },
     )
 
@@ -701,9 +703,11 @@ class CurriculumCfg:
         params={
             "term_name": "height_below",
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
-            "init_max_p": 0.01,  # 早期几乎不惩罚
+            "init_max_p": 0.5,  # Low penalty early on / 早期低惩罚
         },
     )
+
+    
 
     standing_min_height = CurrTerm(
         func=curriculums.modify_reward_param,
@@ -752,7 +756,7 @@ class CurriculumCfg:
         },
     )
 
-    # cop_center: 同理
+    # cop_center: same as above / cop_center: 同理
     cop_center_min_height = CurrTerm(
         func=curriculums.modify_reward_param,
         params={

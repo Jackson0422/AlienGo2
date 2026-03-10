@@ -98,14 +98,14 @@ def contact(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
-    """
-    Check if any body has contact force exceeding threshold.
+    """Check if any body has contact force exceeding threshold.
+    Only checks the current frame to avoid sensor history initialization noise.
     只检测当前帧，避免传感器历史帧的初始化噪声。
     """
     contact_sensor = env.scene[asset_cfg.name]
     net_contact_forces = contact_sensor.data.net_forces_w_history
     
-    # 只使用最后一帧（当前帧），避免历史帧初始化噪声
+    # Only use the last frame (current frame) to avoid history initialization noise / 只使用最后一帧（当前帧），避免历史帧初始化噪声
     current_frame_forces = net_contact_forces[:, -1, asset_cfg.body_ids]  # (num_envs, num_bodies, 3)
     force_norms = torch.norm(current_frame_forces, dim=-1)  # (num_envs, num_bodies)
     
