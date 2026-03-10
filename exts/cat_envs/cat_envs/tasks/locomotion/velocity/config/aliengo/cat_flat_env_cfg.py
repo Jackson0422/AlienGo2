@@ -525,7 +525,7 @@ class ConstraintsCfg:
 
     height_below = ConstraintTerm(
         func=constraints.height_below,
-        max_p=0.5,
+        max_p=0.25,
         params={
             "min_height": 0.55,
             "asset_cfg": SceneEntityCfg("robot"),
@@ -703,7 +703,7 @@ class CurriculumCfg:
         params={
             "term_name": "height_below",
             "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
-            "init_max_p": 0.5,  # Low penalty early on / 早期低惩罚
+            "init_max_p": 0.25,  # Low penalty early on / 早期低惩罚
         },
     )
 
