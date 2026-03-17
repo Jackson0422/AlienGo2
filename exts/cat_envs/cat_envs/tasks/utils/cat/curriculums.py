@@ -59,3 +59,22 @@ def modify_reward_param(
     env.reward_manager.set_term_cfg(term_name, term_cfg)
 
     return current_value
+
+def modify_constraint_param(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    term_name: str,
+    param_name: str,
+    start_value: float,
+    end_value: float,
+    num_steps: int,
+):
+    """Linearly interpolate a constraint term's param from start_value to end_value."""
+    progress = min(env.common_step_counter / num_steps, 1.0)
+    current_value = start_value + progress * (end_value - start_value)
+
+    term_cfg = env.constraint_manager.get_term_cfg(term_name)
+    term_cfg.params[param_name] = current_value
+    env.constraint_manager.set_term_cfg(term_name, term_cfg)
+
+    return current_value

@@ -97,19 +97,14 @@ def upsidedown(
 def contact(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
+    threshold: float = 1.0,
 ) -> torch.Tensor:
-    """Check if any body has contact force exceeding threshold.
-    Only checks the current frame to avoid sensor history initialization noise.
-    只检测当前帧，避免传感器历史帧的初始化噪声。
-    """
+    """Check if any body has contact force exceeding threshold."""
     contact_sensor = env.scene[asset_cfg.name]
     net_contact_forces = contact_sensor.data.net_forces_w_history
-    
-    # Only use the last frame (current frame) to avoid history initialization noise / 只使用最后一帧（当前帧），避免历史帧初始化噪声
-    current_frame_forces = net_contact_forces[:, -1, asset_cfg.body_ids]  # (num_envs, num_bodies, 3)
-    force_norms = torch.norm(current_frame_forces, dim=-1)  # (num_envs, num_bodies)
-    
-    return torch.any(force_norms > 1.0, dim=1)
+    current_frame_forces = net_contact_forces[:, -1, asset_cfg.body_ids]
+    force_norms = torch.norm(current_frame_forces, dim=-1)
+    return torch.any(force_norms > threshold, dim=1)
 
 
 def base_orientation(
@@ -134,7 +129,7 @@ def air_time(
     command_more_than_limit = (
         (
             torch.norm(env.command_manager.get_command("base_velocity")[:, :3], dim=1)
-            > velocity_deadzone
+            >= velocity_deadzone
         )
         .float()
         .unsqueeze(1)
@@ -256,7 +251,7 @@ def min_foot_contact(
     
     command_more_than_limit = (
         torch.norm(env.command_manager.get_command("base_velocity")[:, :3], dim=1)
-        > min_command_value
+        >= min_command_value
     ).float()
     return shortfall * command_more_than_limit
 
@@ -271,3 +266,22 @@ def height_below(
     asset = env.scene[asset_cfg.name]
     h = asset.data.root_pos_w[:, 2]
     return (min_height - h).clamp(min=0.0)
+
+def pitch_out_of_range(
+    env: ManagerBasedRLEnv,
+    upper_limit_deg: float,
+    lower_limit_deg: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Constraint violation when pitch is outside [lower_limit, upper_limit].
+    Returns the angular deviation (in degrees) from the nearest boundary, clamped >= 0.
+    """
+    asset = env.scene[asset_cfg.name]
+    quat = asset.data.root_quat_w
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    sin_pitch = (2.0 * (w * y - z * x)).clamp(-1.0, 1.0)
+    pitch_deg = torch.asin(sin_pitch) * (180.0 / torch.pi)
+
+    above = (pitch_deg - upper_limit_deg).clamp(min=0.0)
+    below = (lower_limit_deg - pitch_deg).clamp(min=0.0)
+    return above + below

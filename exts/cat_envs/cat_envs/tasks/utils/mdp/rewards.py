@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import torch
 from typing import TYPE_CHECKING
 
@@ -147,6 +148,8 @@ def standing_time_bonus_exponential(
     alpha: float = 2.0,
     tau: float = 2.0,
     delay: float = 0.0,
+    min_pitch_deg: float = -80.0,   
+    max_pitch_deg: float = -45.0,   
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
     rear_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
@@ -174,13 +177,20 @@ def standing_time_bonus_exponential(
     max_contact_force = norms.max(dim=1)[0]
     front_feet_ok = max_contact_force < max_front_foot_contact
 
+    # 2.5 Check pitch in range / 检查 pitch 角度范围
+    quat = asset.data.root_quat_w  # (N, 4) wxyz
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    pitch = torch.atan2(2.0 * (w * y - z * x), 1.0 - 2.0 * (x * x + y * y))
+    pitch_deg = pitch * (180.0 / math.pi)
+    pitch_ok = (pitch_deg >= min_pitch_deg) & (pitch_deg <= max_pitch_deg)
+
     # 3. Check rear foot contact (at least one) / 检查后脚着地条件（至少一只）
     rear_forces = contact_sensor.data.net_forces_w_history[:, -1, rear_contact_cfg.body_ids]
     rear_norms = torch.norm(rear_forces, dim=-1)
     rear_any_contact = (rear_norms > 1.0).any(dim=1)
 
     # 4. Combined condition / 综合条件
-    standing_condition = height_ok & front_feet_ok & rear_any_contact
+    standing_condition = height_ok & front_feet_ok & rear_any_contact & pitch_ok
 
     # 5. Update standing timer / 更新计时器
     if not hasattr(env, 'standing_timer'):
@@ -196,7 +206,7 @@ def standing_time_bonus_exponential(
     # 6. Compute exponential reward f(t) = 1 + α * (1 - exp(-t/τ)) / 计算指数奖励
     t = env.standing_timer
     effective_time = torch.clamp(t - delay, min=0.0)
-    reward = 1.0 + alpha * (1.0 - torch.exp(-effective_time / tau))
+    reward =  alpha * (1.0 - torch.exp(-effective_time / tau))
 
     # 7. Only reward when standing time exceeds delay / 只有站立时间超过延迟才给奖励
     reward = torch.where(
@@ -218,6 +228,7 @@ def pitch_in_range_duration(
     delay: float = 0.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+    rear_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),  
 ) -> torch.Tensor:
     """Reward for maintaining pitch angle within target range, active only when height is sufficient and front legs are off ground.
     The longer the pitch is maintained, the higher the reward.
@@ -244,6 +255,11 @@ def pitch_in_range_duration(
     norms = torch.norm(forces, dim=-1)
     max_contact_force = norms.max(dim=1)[0]
     front_feet_ok = max_contact_force < max_front_foot_contact
+
+    # Condition 4: at least one rear foot on ground / 条件4：至少一只后脚着地
+    rear_forces = contact_sensor.data.net_forces_w_history[:, -1, rear_contact_cfg.body_ids]
+    rear_norms = torch.norm(rear_forces, dim=-1)
+    rear_any_contact = (rear_norms > 1.0).any(dim=1)
 
     # All three conditions must be met / 三个条件同时满足
     all_ok = pitch_ok & height_ok & front_feet_ok
@@ -315,9 +331,11 @@ def roll_stability(
 
     return reward * height_gate * front_gate
 
-def com_cop_progress(
+def com_cop_correction(
     env: ManagerBasedRLEnv,
     d_max: float = 0.20,
+    k: float = 4.0,
+    correction_scale: float = 1.0,
     min_height: float = 0.0,
     max_front_contact: float = 1.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -325,38 +343,55 @@ def com_cop_progress(
     contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
     front_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
 ) -> torch.Tensor:
-    """Progressive CoM-CoP alignment reward with exponential shape, gated by height/front feet/rear feet.
-    渐进式 CoM-CoP 对齐奖励，凸函数形状，带高度/前脚/后脚门控。"""
     asset = env.scene[asset_cfg.name]
-    body_com = asset.data.body_com_pos_w                          # (N, num_bodies, 3)
-    body_mass = asset.data.default_mass.to(body_com.device)                            # (N, num_bodies)
-    total_mass = body_mass.sum(dim=1, keepdim=True)                # (N, 1)
-    whole_com = (body_com * body_mass.unsqueeze(-1)).sum(dim=1) / total_mass  # (N, 3)
+    body_com = asset.data.body_com_pos_w
+    body_mass = asset.data.default_mass.to(body_com.device)
+    total_mass = body_mass.sum(dim=1, keepdim=True)
+    whole_com = (body_com * body_mass.unsqueeze(-1)).sum(dim=1) / total_mass
     com_pos = whole_com[:, :2]
 
     contact_sensor = env.scene[contact_cfg.name]
     forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
-    fz = forces[..., 2:3].clamp(min=0.0)  # (N, 2, 1) vertical support force only / 只用竖直支撑力
+    fz = forces[..., 2:3].clamp(min=0.0)
 
     foot_pos = _get_foot_pos_from_calf(asset, foot_cfg)[..., :2]
-
     total_force = fz.sum(dim=1)
     cop_pos = (foot_pos * fz).sum(dim=1) / total_force.clamp(min=1e-6)
 
     d = torch.norm(com_pos - cop_pos, dim=1)
-    reward = torch.exp(-4.0 * (d / d_max) ** 2)
 
-    # Gate 1: height / 门控1：高度
+    # --- Term 1: Alignment reward (peak at d=0) ---
+    alignment = torch.exp(-k * (d / d_max) ** 2)
+
+    # --- Term 2: Correction reward (positive when d is decreasing) ---
+    # --- Term 2: Correction reward (CoP moving towards CoM) ---
+    if not hasattr(env, '_prev_cop_pos'):
+        env._prev_cop_pos = torch.zeros(env.num_envs, 2, device=env.device)
+    reset_ids = env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+    if reset_ids.numel() > 0:
+        env._prev_cop_pos[reset_ids] = cop_pos[reset_ids]
+
+    delta_cop = cop_pos - env._prev_cop_pos  # (N, 2)
+    env._prev_cop_pos = cop_pos.clone()
+    direction = com_pos - cop_pos  # (N, 2) vector from CoP to CoM
+    unit_dir = direction / d.clamp(min=1e-6).unsqueeze(-1)  # (N, 2) unit vector
+    cop_towards_com = (delta_cop * unit_dir).sum(dim=1)  # projection onto CoP→CoM direction
+    correction = (cop_towards_com / d_max).clamp(min=0.0, max=1.0)
+
+    # --- Combined reward ---
+    reward = alignment + correction_scale * correction
+
+    # Gate 1: height
     h = asset.data.root_pos_w[:, 2]
     height_gate = torch.sigmoid((h - min_height) / 0.02)
 
-    # Gate 2: front feet must be off ground / 门控2：前脚必须离地
+    # Gate 2: front feet off ground
     front_forces = contact_sensor.data.net_forces_w_history[:, -1, front_contact_cfg.body_ids]
     front_norms = torch.norm(front_forces, dim=-1)
     front_max = front_norms.max(dim=1)[0]
     front_gate = (front_max < max_front_contact).float()
 
-    # Gate 3: at least one rear foot on ground / 门控3：至少一只后脚着地
+    # Gate 3: at least one rear foot on ground
     rear_any_contact = (fz.squeeze(-1) > 1.0).any(dim=1).float()
 
     return reward * height_gate * front_gate * rear_any_contact
@@ -412,3 +447,15 @@ def height_maintenance(
     asset = env.scene[asset_cfg.name]
     h = asset.data.root_pos_w[:, 2]
     return torch.exp(-((h - target_height) / sigma) ** 2)
+
+def ang_vel_xy_damping(
+    env: ManagerBasedRLEnv,
+    sigma_roll: float = 2.0,
+    sigma_pitch: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    asset = env.scene[asset_cfg.name]
+    w = asset.data.root_ang_vel_b
+    wx = w[:, 0]
+    wy = w[:, 1]
+    return torch.exp(-(sigma_roll * wx * wx + sigma_pitch * wy * wy))
