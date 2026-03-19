@@ -293,7 +293,7 @@ class RewardsCfg:
 
     height_maintenance = RewTerm(
         func=custom_rewards.height_maintenance,
-        weight=0.9,
+        weight=0.75,
         params={
             "target_height": 0.60,
             "sigma": 0.05,
@@ -303,7 +303,7 @@ class RewardsCfg:
 
     standing_duration_bonus = RewTerm(
         func=custom_rewards.standing_time_bonus_exponential,
-        weight=1.0,
+        weight=0.0,
         params={
             "min_height": 0.50,
             "max_height": 0.60,
@@ -322,7 +322,7 @@ class RewardsCfg:
     # (A) Upright fuselage - Consistent gravity vector / 机身直立 - 重力向量一致性
     upright_gravity = RewTerm(
         func=custom_rewards.upright_gravity_alignment,
-        weight=0.5,
+        weight=0.3,
         params={
             "k_o": 5.0,
             "target_pitch_deg": -60.0,  # 75.0 is the default target pitch degree for the robot
@@ -337,7 +337,7 @@ class RewardsCfg:
         params={
             "d_max": 0.20,
             "k": 2.0,
-            "correction_scale": 2.0,
+            "correction_scale": 0.0,
             "min_height": 0.55,
             "max_front_contact": 1.0,
             "asset_cfg": SceneEntityCfg("robot"),
@@ -347,10 +347,25 @@ class RewardsCfg:
         },
     )
 
+    reactive_balance = RewTerm(
+        func=custom_rewards.reactive_balance,
+        weight=0.0,
+        params={
+            "offset_threshold": 0.05,
+            "min_height": 0.50,
+            "max_front_contact": 1.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "rear_joint_cfg": SceneEntityCfg("robot", joint_names=["RL_hip_joint", "RL_thigh_joint", "RL_calf_joint", "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint"]),
+            "foot_cfg": SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
+            "contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+            "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+        },
+    )
+
     # Damping reward for angular velocity in xy plane / 抑制xy平面的角速度奖励
     ang_vel_xy_damping = RewTerm(
         func=custom_rewards.ang_vel_xy_damping,
-        weight=0.5,
+        weight=0.0,
         params={
             "sigma_roll": 2.0,
             "sigma_pitch": 0.5,
@@ -358,6 +373,18 @@ class RewardsCfg:
         },
     )
 
+    rear_stand_alive = RewTerm(
+        func=custom_rewards.rear_stand_alive,
+        weight=1.0,
+        params={
+            "max_front_contact": 1.0,
+            "min_rear_contact": 1.0,
+            "min_height": 0.55,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+            "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+        },
+    )
 
 @configclass
 class ConstraintsCfg:
@@ -403,7 +430,7 @@ class ConstraintsCfg:
     action_rate = ConstraintTerm(
         func=constraints.action_rate,
         max_p=0.25,
-        params={"limit": 80.0, # 80.0 is the default limit for the robot
+        params={"limit": 150.0, # 80.0 is the default limit for the robot
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint", ".*_calf_joint"])},
     )
 
@@ -429,7 +456,7 @@ class ConstraintsCfg:
         func=constraints.contact,  # Contact constraint, no contact allowed / 使用接触约束，不允许接触
         max_p = 0.25, # 1.0 is the default max_p for the contact constraint
         params={
-            "threshold": 10.0,
+            "threshold": 1.0,
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"])
         },
     )
@@ -680,12 +707,12 @@ class CurriculumCfg:
     # )
     # Progressively tighten front foot contact constraint / 渐进式收紧前脚接触约束
     front_foot_contact = CurrTerm(
-        func=curriculums.modify_constraint_p,
+        func=curriculums.modify_constraint_p_custom,
         params={
             "term_name": "front_foot_contact",
-            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,  # Longer progression time / 更长的渐进时间
-            "init_max_p": 0.25,  # Low initial penalty / 初始低惩罚
-            # Final max_p is determined by init_max_p (see modify_constraint_p) / 最终 max_p 由 init_max_p 决定
+            "num_steps": 6 * MAX_CURRICULUM_ITERATIONS,
+            "start_max_p": 0.1,   # 从 0.1 开始
+            "end_max_p": 1.0,     # 涨到 1.0
         },
     )
 
@@ -834,6 +861,17 @@ class CurriculumCfg:
         },
     )
 
+    # rear_stand_alive: min_height 0.45 -> 0.55
+    rear_stand_alive_min_height = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "rear_stand_alive",
+            "param_name": "min_height",
+            "start_value": 0.45,
+            "end_value": 0.55,
+            "num_steps": 48 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
 
 
 ##

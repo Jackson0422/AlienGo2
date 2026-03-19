@@ -459,3 +459,103 @@ def ang_vel_xy_damping(
     wx = w[:, 0]
     wy = w[:, 1]
     return torch.exp(-(sigma_roll * wx * wx + sigma_pitch * wy * wy))
+
+def reactive_balance(
+    env: ManagerBasedRLEnv,
+    offset_threshold: float = 0.05,
+    min_height: float = 0.50,
+    max_front_contact: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    rear_joint_cfg: SceneEntityCfg = SceneEntityCfg(
+        "robot",
+        joint_names=[
+            "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+            "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
+        ],
+    ),
+    foot_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
+    contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+    front_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+) -> torch.Tensor:
+    """Reward rear-leg corrective action when CoM-CoP offset is large.
+    Gated by height, front feet off ground."""
+    asset = env.scene[asset_cfg.name]
+
+    # CoM (whole body)
+    body_com = asset.data.body_com_pos_w
+    body_mass = asset.data.default_mass.to(body_com.device)
+    total_mass = body_mass.sum(dim=1, keepdim=True)
+    com_xy = ((body_com * body_mass.unsqueeze(-1)).sum(dim=1) / total_mass)[:, :2]
+
+    # CoP (rear feet only)
+    contact_sensor = env.scene[contact_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
+    fz = forces[..., 2:3].clamp(min=0.0)
+    foot_pos = _get_foot_pos_from_calf(asset, foot_cfg)[..., :2]
+    cop_xy = (foot_pos * fz).sum(dim=1) / fz.sum(dim=1).clamp(min=1e-6)
+
+    # Offset
+    d = torch.norm(com_xy - cop_xy, dim=1)
+    need_correction = torch.clamp(d - offset_threshold, min=0.0)
+    correction_gate = torch.tanh(need_correction * 10.0)
+
+    # Term 1: rear-leg activity when off-balance
+    rear_joint_vel = asset.data.joint_vel[:, rear_joint_cfg.joint_ids]
+    rear_vel_norm = torch.norm(rear_joint_vel, dim=1)
+    activity = correction_gate * torch.tanh(rear_vel_norm * 0.1)
+
+    # Term 2: offset is shrinking
+    if not hasattr(env, "_prev_reactive_d"):
+        env._prev_reactive_d = d.clone()
+    reset_ids = env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+    if reset_ids.numel() > 0:
+        env._prev_reactive_d[reset_ids] = d[reset_ids]
+    delta_d = env._prev_reactive_d - d
+    env._prev_reactive_d = d.clone()
+    improving = (delta_d.clamp(min=0.0) / (offset_threshold + 1e-6)).clamp(max=1.0)
+
+    reward = activity + 0.5 * improving
+
+    # Gate: height
+    h = asset.data.root_pos_w[:, 2]
+    height_gate = torch.sigmoid((h - min_height) / 0.02)
+
+    # Gate: front feet off ground
+    front_forces = contact_sensor.data.net_forces_w_history[:, -1, front_contact_cfg.body_ids]
+    front_norms = torch.norm(front_forces, dim=-1)
+    front_max = front_norms.max(dim=1)[0]
+    front_gate = (front_max < max_front_contact).float()
+
+    return reward * height_gate * front_gate
+
+def rear_stand_alive(
+    env: ManagerBasedRLEnv,
+    max_front_contact: float = 1.0,
+    min_rear_contact: float = 1.0,
+    min_height: float = 0.45,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+    front_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+) -> torch.Tensor:
+    """Per-step alive reward: 1.0 when rear feet on ground, front feet off, height above threshold.
+    The policy maximizes cumulative reward by staying in this state as long as possible,
+    naturally learning to move rear legs for balance without explicit movement rewards."""
+    asset = env.scene[asset_cfg.name]
+    contact_sensor = env.scene[contact_cfg.name]
+
+    # Rear feet: at least one must be on ground
+    rear_forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
+    rear_norms = torch.norm(rear_forces, dim=-1)
+    rear_on = (rear_norms > min_rear_contact).any(dim=1).float()
+
+    # Front feet: all must be off ground
+    front_forces = contact_sensor.data.net_forces_w_history[:, -1, front_contact_cfg.body_ids]
+    front_norms = torch.norm(front_forces, dim=-1)
+    front_max = front_norms.max(dim=1)[0]
+    front_off = (front_max < max_front_contact).float()
+
+    # Height gate (soft sigmoid instead of hard threshold)
+    h = asset.data.root_pos_w[:, 2]
+    height_gate = torch.sigmoid((h - min_height) / 0.02)
+
+    return rear_on * front_off * height_gate

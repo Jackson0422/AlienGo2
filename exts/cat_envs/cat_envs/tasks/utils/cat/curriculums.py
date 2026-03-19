@@ -78,3 +78,23 @@ def modify_constraint_param(
     env.constraint_manager.set_term_cfg(term_name, term_cfg)
 
     return current_value
+
+def modify_constraint_p_custom(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    term_name: str,
+    num_steps: int,
+    start_max_p: float,
+    end_max_p: float,
+):
+    progress = min(env.common_step_counter / num_steps, 1.0)
+
+    T_start = 1 / start_max_p  # e.g. start_max_p=0.1 → T_start=10
+    T_end = 1 / end_max_p      # e.g. end_max_p=1.0 → T_end=1
+    current_max_p = 1 / (T_start + progress * (T_end - T_start))
+
+    term_cfg = env.constraint_manager.get_term_cfg(term_name)
+    term_cfg.max_p = current_max_p
+    env.constraint_manager.set_term_cfg(term_name, term_cfg)
+
+    return current_max_p
