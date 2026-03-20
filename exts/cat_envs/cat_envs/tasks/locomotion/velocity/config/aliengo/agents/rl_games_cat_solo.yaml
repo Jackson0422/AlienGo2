@@ -45,7 +45,7 @@ params:
   # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-02-13_18-34-34/nn/solo_cat.pth' # 加在会使用前腿跳跃的模型来训练站立
   # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-02-17_22-13-20/nn/solo_cat.pth' # 加载会使用前腿跳跃并且可以维持一会站立的模型
   # load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-02-27_21-00-46/nn/solo_cat.pth' # 加载引入cop和com奖励函数和curriculum调整gate的训练结果（会站立一小会）
-  load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-03-17_06-34-41/nn/solo_cat.pth' # 加载站立更加完美的姿态训练结果（站立更加稳定，但是站立时间更短）
+  load_path: '/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat/2026-03-18_20-19-12/nn/solo_cat.pth' # 加载站立更加完美的姿态训练结果（站立更加稳定，可以保持站立）
   
   config:
     name: solo_cat
