@@ -236,6 +236,8 @@ def min_foot_contact(
     min_feet: int,
     min_command_value: float,
     asset_cfg: SceneEntityCfg,
+    min_height: float = 0.0,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     contact_sensor = env.scene[asset_cfg.name]
     net_contact_forces = contact_sensor.data.net_forces_w_history
@@ -247,13 +249,18 @@ def min_foot_contact(
         > 1.0
     ).sum(1)
     
-    shortfall = (min_feet - num_contact).clamp(min=0.0)
+    shortfall = (min_feet - num_contact).clamp(min=0.0) # at least one foot contact /至少有一条腿接触地面
+    # shortfall = (num_contact - min_feet).clamp(min=0.0) # at most min_feet feet contact / 最多有 min_feet 条腿接触地面
     
     command_more_than_limit = (
         torch.norm(env.command_manager.get_command("base_velocity")[:, :3], dim=1)
         >= min_command_value
     ).float()
-    return shortfall * command_more_than_limit
+
+    h = env.scene[robot_cfg.name].data.root_pos_w[:, 2]
+    standing = (h > min_height).float()
+
+    return shortfall * command_more_than_limit * standing - (1.0 - standing) * 1.0
 
 def height_below(
     env: ManagerBasedRLEnv,
@@ -285,3 +292,37 @@ def pitch_out_of_range(
     above = (pitch_deg - upper_limit_deg).clamp(min=0.0)
     below = (lower_limit_deg - pitch_deg).clamp(min=0.0)
     return above + below
+
+def front_leg_pos_when_standing(
+    env: ManagerBasedRLEnv,
+    target_angles: list[float],
+    limit: float,
+    min_height: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize front leg joints deviating from target angles, only when standing.
+    Below min_height, constraint is inactive."""
+    asset = env.scene[asset_cfg.name]
+    h = asset.data.root_pos_w[:, 2]
+
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    targets = torch.tensor(target_angles, device=joint_pos.device).unsqueeze(0)
+    violation = torch.abs(joint_pos - targets) - limit
+
+    standing = (h > min_height).float().unsqueeze(1)
+    return violation * standing - (1.0 - standing) * 1.0
+
+def base_ang_vel_z_when_standing(
+    env: ManagerBasedRLEnv,
+    limit: float,
+    min_height: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize yaw rotation only when standing (above min_height).
+    Below min_height, constraint is inactive."""
+    data = env.scene[asset_cfg.name].data
+    h = data.root_pos_w[:, 2]
+
+    violation = torch.abs(data.root_ang_vel_b[:, 2:3]) - limit
+    standing = (h > min_height).float().unsqueeze(1)
+    return violation * standing - (1.0 - standing) * 1.0

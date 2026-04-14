@@ -291,10 +291,11 @@ def upright_gravity_alignment(
     env: ManagerBasedRLEnv,
     k_o: float = 5.0,
     target_pitch_deg: float = 75.0,
+    min_height: float = 0.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     data = env.scene[asset_cfg.name].data
-    g_B = data.projected_gravity_b  # (N, 3)
+    g_B = data.projected_gravity_b
 
     theta = target_pitch_deg * torch.pi / 180.0
     g_target = torch.tensor(
@@ -303,7 +304,12 @@ def upright_gravity_alignment(
     )
 
     error_sq = torch.sum((g_B - g_target) ** 2, dim=1)
-    return torch.exp(-k_o * error_sq)
+    reward = torch.exp(-k_o * error_sq)
+
+    h = data.root_pos_w[:, 2]
+    height_gate = torch.sigmoid((h - min_height) / 0.02)
+
+    return reward * height_gate
 
 def roll_stability(
     env: ManagerBasedRLEnv,
@@ -441,12 +447,35 @@ def height_maintenance(
     env: ManagerBasedRLEnv,
     target_height: float,
     sigma: float = 0.05,
+    target_pitch_deg: float = -90.0,
+    pitch_sigma_deg: float = 20.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Gaussian reward centered at target_height. Always provides gradient."""
     asset = env.scene[asset_cfg.name]
     h = asset.data.root_pos_w[:, 2]
-    return torch.exp(-((h - target_height) / sigma) ** 2)
+    height_reward = torch.exp(-((h - target_height) / sigma) ** 2)
+
+    g = asset.data.projected_gravity_b
+    pitch = torch.atan2(-g[:, 0], -g[:, 2])
+    target_pitch_rad = target_pitch_deg * 3.14159 / 180.0
+    pitch_sigma_rad = pitch_sigma_deg * 3.14159 / 180.0
+    pitch_reward = torch.exp(-((pitch - target_pitch_rad) / pitch_sigma_rad) ** 2)
+
+    pitch_grav_deg = pitch * 180.0 / 3.14159
+
+    # quat = asset.data.root_quat_w
+    # w_, x_, y_, z_ = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    # pitch_quat_deg = torch.asin((2.0 * (w_ * y_ - z_ * x_)).clamp(-1, 1)) * 180.0 / 3.14159
+
+    # if env.common_step_counter % 200 == 0:
+    #     print(f"[step {env.common_step_counter}] "
+    #         f"h={h[0]:.3f}m, "
+    #         f"pitch_gravity={pitch_grav_deg[0]:.1f}°, "
+    #         f"pitch_quat={pitch_quat_deg[0]:.1f}°, "
+    #         f"h_rew={height_reward[0]:.4f}, "
+    #         f"p_rew={pitch_reward[0]:.4f}")
+
+    return height_reward * pitch_reward
 
 def ang_vel_xy_damping(
     env: ManagerBasedRLEnv,
@@ -559,3 +588,45 @@ def rear_stand_alive(
     height_gate = torch.sigmoid((h - min_height) / 0.02)
 
     return rear_on * front_off * height_gate
+
+def front_leg_posture_quadratic(
+    env: ManagerBasedRLEnv,
+    target_angles: list,
+    scale: float = 5.0,
+    min_height: float = 0.55,
+    max_front_contact: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    front_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+) -> torch.Tensor:
+    """Quadratic reward: 1 / (1 + scale * error^2). Peak at target, slow decrease away."""
+    asset = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    targets = torch.tensor(target_angles, device=joint_pos.device).unsqueeze(0)
+
+    error_sq = (joint_pos - targets) ** 2
+    reward_per_joint = 1.0 / (1.0 + scale * error_sq)
+    reward = reward_per_joint.mean(dim=1)
+
+    h = asset.data.root_pos_w[:, 2]
+    height_gate = torch.sigmoid((h - min_height) / 0.02)
+
+    contact_sensor = env.scene[front_contact_cfg.name]
+    front_forces = contact_sensor.data.net_forces_w_history[:, -1, front_contact_cfg.body_ids]
+    front_norms = torch.norm(front_forces, dim=-1)
+    front_max = front_norms.max(dim=1)[0]
+    front_gate = (front_max < max_front_contact).float()
+
+    return reward * height_gate * front_gate
+
+def rear_joint_acc_penalty(
+    env: ManagerBasedRLEnv,
+    limit: float = 100.0,
+    k: float = 0.001,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize joint acceleration exceeding limit. Returns 0 when below limit, increases toward 1 above."""
+    asset = env.scene[asset_cfg.name]
+    acc_sq = torch.square(asset.data.joint_acc[:, asset_cfg.joint_ids])
+    mean_acc = torch.sqrt(acc_sq.mean(dim=1))
+    excess = (mean_acc - limit).clamp(min=0.0)
+    return 1.0 - torch.exp(-k * excess)
