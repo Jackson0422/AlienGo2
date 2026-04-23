@@ -326,3 +326,69 @@ def base_ang_vel_z_when_standing(
     violation = torch.abs(data.root_ang_vel_b[:, 2:3]) - limit
     standing = (h > min_height).float().unsqueeze(1)
     return violation * standing - (1.0 - standing) * 1.0
+
+def rear_leg_balance_response(
+    env: ManagerBasedRLEnv,
+    d_norm_threshold: float = 0.7,
+    min_joint_vel: float = 2.0,
+    foot_radius: float = 0.04,
+    min_height: float = 0.50,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    foot_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
+    contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+    front_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+    rear_joint_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[
+        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
+    ]),
+) -> torch.Tensor:
+    from cat_envs.tasks.utils.mdp.rewards import _get_foot_pos_from_calf
+    asset = env.scene[asset_cfg.name]
+
+    # --- CoM ---
+    body_com = asset.data.body_com_pos_w
+    body_mass = asset.data.default_mass.to(body_com.device)
+    total_mass = body_mass.sum(dim=1, keepdim=True)
+    com_xy = ((body_com * body_mass.unsqueeze(-1)).sum(dim=1) / total_mass)[:, :2]
+
+    # --- CoP ---
+    contact_sensor = env.scene[contact_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
+    fz = forces[..., 2:3].clamp(min=0.0)
+    foot_pos = _get_foot_pos_from_calf(asset, foot_cfg)
+    foot_xy = foot_pos[..., :2]
+    cop_xy = (foot_xy * fz).sum(dim=1) / fz.sum(dim=1).clamp(min=1e-6)
+
+    # --- 各向异性 d_norm ---
+    foot_L = foot_xy[:, 0, :]
+    foot_R = foot_xy[:, 1, :]
+    support_vec = foot_R - foot_L
+    support_len = torch.norm(support_vec, dim=1)
+    support_dir = support_vec / support_len.clamp(min=1e-6).unsqueeze(-1)
+
+    offset = com_xy - cop_xy
+    lateral  = (offset * support_dir).sum(dim=1)
+    sagittal_vec = offset - lateral.unsqueeze(-1) * support_dir
+    sagittal = torch.norm(sagittal_vec, dim=1)
+
+    d_norm = torch.sqrt(
+        (lateral / (support_len / 2.0).clamp(min=0.02)) ** 2 +
+        (sagittal / foot_radius) ** 2
+    )
+
+    # --- 违反量：d_norm 超过阈值 且 后腿不动 ---
+    off_balance = (d_norm - d_norm_threshold).clamp(min=0.0)          # 超出安全域的程度
+    rear_vel = asset.data.joint_vel[:, rear_joint_cfg.joint_ids]      # (N, 6)
+    rear_vel_norm = torch.norm(rear_vel, dim=1)                        # (N,)
+    vel_insufficient = (min_joint_vel - rear_vel_norm).clamp(min=0.0) / min_joint_vel  # [0,1]
+
+    violation = off_balance * vel_insufficient
+
+    # --- Gates ---
+    h = asset.data.root_pos_w[:, 2]
+    standing = (h > min_height).float()
+    front_forces = contact_sensor.data.net_forces_w_history[:, -1, front_contact_cfg.body_ids]
+    front_off = (torch.norm(front_forces, dim=-1).max(dim=1)[0] < 1.0).float()
+    rear_on = (fz.squeeze(-1) > 1.0).any(dim=1).float()
+
+    return violation * standing * front_off * rear_on

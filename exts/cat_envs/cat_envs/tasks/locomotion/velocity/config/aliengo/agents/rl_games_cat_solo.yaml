@@ -76,7 +76,7 @@ params:
     # schedule_type: legacy
     kl_threshold: 0.016 # target kl for adaptive lr
     grad_norm: 0.5
-    entropy_coef: 0.001
+    entropy_coef: 0.005
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 48 # 24 for t = 0.02 (decimation = 4)

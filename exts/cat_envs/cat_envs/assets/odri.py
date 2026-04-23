@@ -148,7 +148,7 @@ ALIENGO_CFG = ArticulationCfg(
             effort_limit=33.5,
             velocity_limit=21.0,
             stiffness={".*": 25.0},
-            damping={".*": 0.5},
+            damping={".*": 1.5},
         ),
     },
 )

@@ -89,3 +89,6 @@ python scripts/rl_games/play.py --task=Isaac-Velocity-CaT-Flat-AlienGo-Play-v0 -
 tensorboard --logdir=/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat --port=6006
 
 http://localhost:6006
+
+2026-04-14_16-57-33学会了比较好的站立姿态
+2026-04-15_07-21-37学会了维持平衡，但是只学会了迈一步

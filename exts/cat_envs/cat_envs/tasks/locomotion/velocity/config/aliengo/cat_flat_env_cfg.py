@@ -303,6 +303,18 @@ class RewardsCfg:
         },
     )
 
+    posture_progress = RewTerm(
+        func=custom_rewards.posture_progress_to_target,
+        weight=3.0,                    # 稀疏奖励，权重要大
+        params={
+            "target_height": 0.65,
+            "sigma": 0.20,              
+            "target_pitch_deg": 80.0,
+            "pitch_sigma_deg": 40.0,    
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+
     # (C) CoM-CoP Horizontal Alignment - Balance Core / CoM-CoP 水平对齐 - 平衡核心
     com_cop_align = RewTerm(
         func=custom_rewards.com_cop_correction,
@@ -327,6 +339,8 @@ class RewardsCfg:
             "max_front_contact": 1.0,   # 前脚接触力低于此值视为离地
             "min_rear_contact": 1.0,    # 后脚接触力高于此值视为着地
             "min_height": 0.45,         # 最低高度门控
+            "target_pitch_deg": 80.0,
+            "pitch_sigma_deg": 20.0,
             "asset_cfg": SceneEntityCfg("robot"),
             "contact_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
             "front_contact_cfg": SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
@@ -428,14 +442,14 @@ class ConstraintsCfg:
     )
 
     # Style constraints
-    air_time = ConstraintTerm(
-        func=constraints.air_time,
-        max_p=0.25,
-        params={
-            "limit": 0.2, 
-            "velocity_deadzone": 0.0,
-            "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])},
-    )
+    # air_time = ConstraintTerm(
+    #     func=constraints.air_time,
+    #     max_p=0.25,
+    #     params={
+    #         "limit": 0.2, 
+    #         "velocity_deadzone": 0.0,
+    #         "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])},
+    # )
 
     one_foot_contact = ConstraintTerm(
         func=constraints.min_foot_contact,
@@ -614,15 +628,15 @@ class CurriculumCfg:
         },
     )
     # Style constraints
-    air_time = CurrTerm(
-        func=curriculums.modify_constraint_p_custom,
-        params={
-            "term_name": "air_time",
-            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS, # 24 is the default num_steps for the air time constraint
-            "start_max_p": 0.1,
-            "end_max_p": 0.25,
-        },
-    )
+    # air_time = CurrTerm(
+    #     func=curriculums.modify_constraint_p_custom,
+    #     params={
+    #         "term_name": "air_time",
+    #         "num_steps": 24 * MAX_CURRICULUM_ITERATIONS, # 24 is the default num_steps for the air time constraint
+    #         "start_max_p": 0.1,
+    #         "end_max_p": 0.25,
+    #     },
+    # )
     one_foot_contact = CurrTerm(
         func=curriculums.modify_constraint_p_custom,
         params={
@@ -691,10 +705,32 @@ class CurriculumCfg:
             "term_name": "height_maintenance",
             "param_name": "pitch_sigma_deg",
             "start_value": 25.0,
-            "end_value": 5.0,
+            "end_value": 10.0,
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
         },
     )
+
+    # posture_progress_pitch_deg = CurrTerm(
+    posture_progress_pitch_deg = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "posture_progress",
+            "param_name": "target_pitch_deg",
+            "start_value": 10.0,
+            "end_value": 80.0,
+            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+    posture_progress_target_height = CurrTerm(
+        func=curriculums.modify_reward_param,
+        params={
+            "term_name": "posture_progress",
+            "param_name": "target_height",
+            "start_value": 0.45,
+            "end_value": 0.65,
+            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+        },
+    ) 
 
     # com_cop_align: min_height 0.45 -> 0.60
     com_cop_min_height = CurrTerm(
@@ -743,8 +779,6 @@ class CurriculumCfg:
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
         },
     )
-
-    
 
 ##
 # Environment configuration
