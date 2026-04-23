@@ -333,6 +333,14 @@ class RewardsCfg:
         },
     )
 
+    joint_acc_penalty = RewTerm(
+        func=custom_rewards.joint_acceleration_penalty,
+        weight=0.1,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+
 @configclass
 class ConstraintsCfg:
     # Safety Soft constraints

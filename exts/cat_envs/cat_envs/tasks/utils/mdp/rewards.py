@@ -1186,7 +1186,7 @@ def base_height_task(
     """
     asset = env.scene[asset_cfg.name]
     h = asset.data.root_pos_w[:, 2]
-    return -(h - target_height) ** 2
+    return torch.exp(-(h - target_height) ** 2)
 
 
 def base_pitch_task(
@@ -1219,7 +1219,7 @@ def base_pitch_task(
     g = asset.data.projected_gravity_b
     pitch = torch.atan2(-g[:, 0], -g[:, 2])
     target_pitch_rad = target_pitch_deg * math.pi / 180.0
-    return -torch.cos(target_pitch_rad - pitch)
+    return torch.exp(-torch.cos(target_pitch_rad - pitch))
 
 
 def upright_balance(
@@ -1350,3 +1350,17 @@ def support_polygon(
     penalty = -(v_x_cmd ** 2) * (math.pi / 2 - torch.abs(angle)) ** 2
 
     return penalty * active
+
+def joint_acceleration_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Joint acceleration penalty:  r = -|q_ddot|^2
+    Penalizes large joint accelerations to encourage smooth motion.
+    Use a very small weight (e.g. 5e-9) since |q_ddot|^2 summed over
+    12 joints can reach 1e6 ~ 1e8 (rad/s^2)^2.
+    Args:
+        asset_cfg: Robot asset config.
+    """
+    asset = env.scene[asset_cfg.name]
+    return -torch.sum(torch.square(asset.data.joint_acc[:, asset_cfg.joint_ids]), dim=1)
