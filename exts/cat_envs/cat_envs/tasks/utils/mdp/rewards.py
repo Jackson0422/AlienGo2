@@ -1169,3 +1169,184 @@ def dynamic_balance_cp_switch(
 
     return reward * height_gate * front_gate * rear_any_contact
 
+def base_height_task(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Base height reward (Table I):  r = -(z - z^c)^2
+
+    A pure quadratic penalty (<= 0). Maximum (= 0) is achieved when the base
+    height z equals the target z^c; the reward decreases quadratically with
+    the height error.
+
+    Args:
+        target_height: Target base height z^c, in meters.
+        asset_cfg: Robot asset config.
+    """
+    asset = env.scene[asset_cfg.name]
+    h = asset.data.root_pos_w[:, 2]
+    return -(h - target_height) ** 2
+
+
+def base_pitch_task(
+    env: ManagerBasedRLEnv,
+    target_pitch_deg: float = 90.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Base pitch reward (Table I):  r = -cos(p^c - p)
+
+    Pitch is extracted from the projected gravity in the body frame, using the
+    SAME convention as `height_maintenance`:
+        pitch = atan2(-g_x, -g_z)
+    In this convention:
+        - Flat quadrupedal stance  => pitch =  0 deg
+        - Fully upright rearing    => pitch = +90 deg
+    Therefore `target_pitch_deg` must be POSITIVE (e.g. 80-90 deg).
+
+    Note:
+        The formula follows Table I literally. If you prefer the "pure
+        penalty" form (max = 0 at target, min = -2 at opposite), replace the
+        return statement with:
+            return torch.cos(target_pitch_rad - pitch) - 1.0
+        Both forms share the same gradient direction in RL.
+
+    Args:
+        target_pitch_deg: Target pitch angle in degrees (positive = nose up).
+        asset_cfg: Robot asset config.
+    """
+    asset = env.scene[asset_cfg.name]
+    g = asset.data.projected_gravity_b
+    pitch = torch.atan2(-g[:, 0], -g[:, 2])
+    target_pitch_rad = target_pitch_deg * math.pi / 180.0
+    return -torch.cos(target_pitch_rad - pitch)
+
+
+def upright_balance(
+    env: ManagerBasedRLEnv,
+    sigma_vz: float = 0.25,
+    sigma_pitch_rate: float = 0.25,
+    upright_pitch_deg: float = 60.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Upright balance reward (Table I):
+        r = exp(-v_z^2 / sigma_vz) + exp(-p_dot^2 / sigma_pitch_rate)
+            if upright, else 0
+
+    Once the robot has reached a sufficiently upright posture, this term
+    encourages minimizing:
+      - v_z:     base vertical (world-z) linear velocity
+      - p_dot:   base pitch angular velocity (body-frame y-axis component)
+
+    The "is_upright" gate is based on the pitch angle extracted from projected
+    gravity, using the same convention as `base_pitch_task`
+    (upright corresponds to +90 deg).
+
+    Args:
+        sigma_vz: Gaussian scale for the vertical-velocity term.
+        sigma_pitch_rate: Gaussian scale for the pitch-rate term.
+        upright_pitch_deg: Threshold (deg) above which the reward becomes active.
+        asset_cfg: Robot asset config.
+    """
+    asset = env.scene[asset_cfg.name]
+
+    # Vertical (world-z) linear velocity of the base.
+    v_z = asset.data.root_lin_vel_w[:, 2]
+    # Pitch angular velocity: y-axis component of base angular velocity in body frame.
+    pitch_rate = asset.data.root_ang_vel_b[:, 1]
+
+    reward = (
+        torch.exp(-(v_z * v_z) / sigma_vz)
+        + torch.exp(-(pitch_rate * pitch_rate) / sigma_pitch_rate)
+    )
+
+    # Upright gate: pitch >= threshold (positive = nose up).
+    g = asset.data.projected_gravity_b
+    pitch = torch.atan2(-g[:, 0], -g[:, 2])
+    pitch_deg = pitch * 180.0 / math.pi
+    is_upright = (pitch_deg >= upright_pitch_deg).float()
+
+    return reward * is_upright
+
+
+def support_polygon(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    foot_cfg: SceneEntityCfg = SceneEntityCfg(
+        "robot", body_names=["RL_calf", "RR_calf"]
+    ),
+) -> torch.Tensor:
+    """Support polygon reward (Table I):
+        r = -|v_x^c|^2 * (pi/2 - |arctan(dx_b / dz_b)|)^2
+            if arctan(dx_b / dz_b) * v_x^c < 0, else 0
+
+    Geometry:
+        Let delta = base_pos - support_pos, expressed in the BODY frame,
+        i.e. (dx_b, dy_b, dz_b). `support_pos` is the average world position
+        of the two rear feet (approximating the support polygon center).
+        `arctan(dx_b / dz_b)` is the angle between the support-to-base line
+        and the body's vertical axis:
+            0       : CoM directly above support (in body frame)
+            > 0     : CoM leaning forward of support (in body frame)
+            < 0     : CoM leaning backward of support (in body frame)
+            +/- pi/2: base at the same body-z height as support (penalty = 0)
+
+    Activation:
+        The penalty is applied only when the lean direction CONFLICTS with the
+        commanded forward velocity, i.e. angle * v_x^c < 0. Otherwise 0.
+
+    Notes:
+        - delta is transformed into the body frame by applying the CONJUGATE
+          (= inverse, since the quaternion is unit) of the base quaternion.
+          Using the world frame would be WRONG: when fully upright, dx_w ~= 0
+          but dx_b ~= L, giving completely opposite angle values.
+        - `_get_foot_pos_from_calf` already applies the 0.25 m offset along
+          the calf's local -z axis (rotated into world frame via calf quat),
+          so `foot_pos_w` is the true foot contact point, not the calf link
+          center. See `rewards.py` top-of-file helper for details.
+        - `torch.atan2` is well-defined at (0, 0) (returns 0); no clamp is
+          needed. Clamping dz would destroy its sign and corrupt the angle.
+
+    Args:
+        command_name: Name of the velocity command term.
+        asset_cfg: Robot asset config.
+        foot_cfg: Config for the support feet (default: the two rear calves).
+    """
+    asset = env.scene[asset_cfg.name]
+
+    # Commanded forward velocity v_x^c.
+    v_x_cmd = env.command_manager.get_command(command_name)[:, 0]
+
+    # Base pose and support center (average of two rear-foot contact points).
+    base_pos_w = asset.data.root_pos_w                     # (N, 3)
+    base_quat_w = asset.data.root_quat_w                   # (N, 4) wxyz, unit
+    foot_pos_w = _get_foot_pos_from_calf(asset, foot_cfg)  # (N, 2, 3)
+    support_pos_w = foot_pos_w.mean(dim=1)                 # (N, 3)
+
+    # World-frame offset from support to base.
+    delta_w = base_pos_w - support_pos_w                   # (N, 3)
+
+    # Rotate delta into the body frame using the conjugate quaternion:
+    # q* = (w, -x, -y, -z). For a unit quaternion this equals the inverse.
+    base_quat_inv = torch.stack([
+        base_quat_w[:, 0],
+        -base_quat_w[:, 1],
+        -base_quat_w[:, 2],
+        -base_quat_w[:, 3],
+    ], dim=-1)
+    delta_b = _quat_apply_wxyz(base_quat_inv, delta_w)     # (N, 3)
+
+    dx_b = delta_b[:, 0]
+    dz_b = delta_b[:, 2]
+
+    # atan2 natively handles (0, 0) -> 0; do NOT clamp dz, that breaks the sign.
+    angle = torch.atan2(dx_b, dz_b)
+
+    # Activate only when the lean direction opposes the commanded velocity.
+    active = (angle * v_x_cmd < 0).float()
+
+    # Quadratic penalty; magnitude grows with command speed and misalignment.
+    penalty = -(v_x_cmd ** 2) * (math.pi / 2 - torch.abs(angle)) ** 2
+
+    return penalty * active
