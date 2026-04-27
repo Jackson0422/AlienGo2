@@ -305,7 +305,7 @@ class RewardsCfg:
         func=custom_rewards.base_pitch_task,
         weight=1.0,
         params={
-            "target_pitch_deg": 90.0,
+            "target_pitch_deg": -90.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -335,7 +335,7 @@ class RewardsCfg:
 
     joint_acc_penalty = RewTerm(
         func=custom_rewards.joint_acceleration_penalty,
-        weight=0.1,
+        weight=5e-9,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
         },
@@ -376,18 +376,18 @@ class ConstraintsCfg:
         params={"limit": 16.0,
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])},
     )
-    joint_acceleration_hip_thigh = ConstraintTerm(
-        func=constraints.joint_acceleration,
-        max_p=0.25,
-        params={"limit": 200.0,
-                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint"])},
-    )
-    joint_acceleration_calf = ConstraintTerm(
-        func=constraints.joint_acceleration,
-        max_p=0.25,
-        params={"limit": 150.0,
-                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])},
-    )
+    # joint_acceleration_hip_thigh = ConstraintTerm(
+    #     func=constraints.joint_acceleration,
+    #     max_p=0.25,
+    #     params={"limit": 200.0,
+    #             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint"])},
+    # )
+    # joint_acceleration_calf = ConstraintTerm(
+    #     func=constraints.joint_acceleration,
+    #     max_p=0.25,
+    #     params={"limit": 150.0,
+    #             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])},
+    # )
     action_rate_rear_legs   = ConstraintTerm(
         func=constraints.action_rate,
         max_p=0.25,
@@ -512,22 +512,22 @@ class CurriculumCfg:
         },
     )
 
-    joint_acceleration_hip_thigh = CurrTerm(
-        func=curriculums.modify_constraint_p,
-        params={
-            "term_name": "joint_acceleration_hip_thigh",
-            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
-            "init_max_p": 0.25,
-        },
-    )
-    joint_acceleration_calf = CurrTerm(
-        func=curriculums.modify_constraint_p,
-        params={
-            "term_name": "joint_acceleration_calf",
-            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
-            "init_max_p": 0.25,
-        },
-    )
+    # joint_acceleration_hip_thigh = CurrTerm(
+    #     func=curriculums.modify_constraint_p,
+    #     params={
+    #         "term_name": "joint_acceleration_hip_thigh",
+    #         "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+    #         "init_max_p": 0.25,
+    #     },
+    # )
+    # joint_acceleration_calf = CurrTerm(
+    #     func=curriculums.modify_constraint_p,
+    #     params={
+    #         "term_name": "joint_acceleration_calf",
+    #         "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+    #         "init_max_p": 0.25,
+    #     },
+    # )
     action_rate_rear_legs = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
