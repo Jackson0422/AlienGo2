@@ -1194,8 +1194,7 @@ def base_pitch_task(
     target_pitch_deg: float = 90.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Base pitch reward (Table I):  r = -cos(p^c - p)
-
+    """Base pitch reward:  r = 1 + cos(p^c - p)
     Pitch is extracted from the projected gravity in the body frame, using the
     SAME convention as `height_maintenance`:
         pitch = atan2(-g_x, -g_z)
@@ -1203,14 +1202,10 @@ def base_pitch_task(
         - Flat quadrupedal stance  => pitch =  0 deg
         - Fully upright rearing    => pitch = +90 deg
     Therefore `target_pitch_deg` must be POSITIVE (e.g. 80-90 deg).
-
-    Note:
-        The formula follows Table I literally. If you prefer the "pure
-        penalty" form (max = 0 at target, min = -2 at opposite), replace the
-        return statement with:
-            return torch.cos(target_pitch_rad - pitch) - 1.0
-        Both forms share the same gradient direction in RL.
-
+    Reward shape:
+        Δp =  0    (target reached)        -> r = 2  (max)
+        Δp = ±π/2                          -> r = 1
+        Δp = ±π    (opposite of target)    -> r = 0  (min)
     Args:
         target_pitch_deg: Target pitch angle in degrees (positive = nose up).
         asset_cfg: Robot asset config.
@@ -1219,8 +1214,7 @@ def base_pitch_task(
     g = asset.data.projected_gravity_b
     pitch = torch.atan2(-g[:, 0], -g[:, 2])
     target_pitch_rad = target_pitch_deg * math.pi / 180.0
-    return torch.exp(-torch.cos(target_pitch_rad - pitch))
-
+    return 1.0 + torch.cos(target_pitch_rad - pitch)
 
 def upright_balance(
     env: ManagerBasedRLEnv,

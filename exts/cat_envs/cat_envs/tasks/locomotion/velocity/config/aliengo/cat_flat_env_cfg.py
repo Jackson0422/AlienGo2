@@ -300,19 +300,19 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    # Base pitch:   r = -cos(p^c - p)
+   # Base pitch:   r = 1 + cos(p^c - p)   (max = 2 at target, min = 0 at opposite)
     base_pitch = RewTerm(
         func=custom_rewards.base_pitch_task,
         weight=1.0,
         params={
-            "target_pitch_deg": -90.0,
+            "target_pitch_deg": 90.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
     # Upright balance:  r = exp(-v_z^2/sigma) + exp(-p_dot^2/sigma)  if upright else 0
     upright_balance = RewTerm(
         func=custom_rewards.upright_balance,
-        weight=1.0,
+        weight=0.5,
         params={
             "sigma_vz": 0.25,
             "sigma_pitch_rate": 0.25,
@@ -376,18 +376,6 @@ class ConstraintsCfg:
         params={"limit": 16.0,
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])},
     )
-    # joint_acceleration_hip_thigh = ConstraintTerm(
-    #     func=constraints.joint_acceleration,
-    #     max_p=0.25,
-    #     params={"limit": 200.0,
-    #             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint"])},
-    # )
-    # joint_acceleration_calf = ConstraintTerm(
-    #     func=constraints.joint_acceleration,
-    #     max_p=0.25,
-    #     params={"limit": 150.0,
-    #             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_calf_joint"])},
-    # )
     action_rate_rear_legs   = ConstraintTerm(
         func=constraints.action_rate,
         max_p=0.25,
@@ -418,15 +406,16 @@ class ConstraintsCfg:
                 "asset_cfg": SceneEntityCfg("robot")}
     )
 
-    # Style constraints
-    # air_time = ConstraintTerm(
-    #     func=constraints.air_time,
-    #     max_p=0.25,
-    #     params={
-    #         "limit": 0.2, 
-    #         "velocity_deadzone": 0.0,
-    #         "asset_cfg": SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"])},
-    # )
+    knee_contact = ConstraintTerm(
+        func=constraints.knee_height,
+        max_p=1.0,
+        params={
+            "min_z": 0.25 / 2 ** 0.5,   # ≈ 0.1768 m, 即 calf 倾斜 ≤ 45°
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=[".*_calf"]
+            ),
+        },
+    )
 
 @configclass
 class TerminationsCfg:
@@ -512,22 +501,6 @@ class CurriculumCfg:
         },
     )
 
-    # joint_acceleration_hip_thigh = CurrTerm(
-    #     func=curriculums.modify_constraint_p,
-    #     params={
-    #         "term_name": "joint_acceleration_hip_thigh",
-    #         "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
-    #         "init_max_p": 0.25,
-    #     },
-    # )
-    # joint_acceleration_calf = CurrTerm(
-    #     func=curriculums.modify_constraint_p,
-    #     params={
-    #         "term_name": "joint_acceleration_calf",
-    #         "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
-    #         "init_max_p": 0.25,
-    #     },
-    # )
     action_rate_rear_legs = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={

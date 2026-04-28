@@ -392,3 +392,19 @@ def rear_leg_balance_response(
     rear_on = (fz.squeeze(-1) > 1.0).any(dim=1).float()
 
     return violation * standing * front_off * rear_on
+
+def knee_height(
+    env: ManagerBasedRLEnv,
+    min_z: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Trigger when any calf-link origin (= knee joint position in world frame)
+    drops below `min_z` meters above ground.
+
+    For Aliengo (calf length L = 0.25 m), setting `min_z = L / sqrt(2) ≈ 0.1768 m`
+    geometrically forbids the calf from tilting more than 45° from vertical
+    (i.e. forbids kneeling / squatting on the back of the calf).
+    """
+    robot = env.scene[asset_cfg.name]
+    knee_z = robot.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    return torch.any(knee_z < min_z, dim=1)
