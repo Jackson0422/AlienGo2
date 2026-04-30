@@ -417,6 +417,17 @@ class ConstraintsCfg:
         },
     )
 
+    front_foot_contact = ConstraintTerm(
+        func=constraints.contact,
+        max_p=0.25,
+        params={
+            "threshold": 1.0,
+            "asset_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["FL_calf", "FR_calf"]
+            ),
+        },
+    )
+
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
@@ -550,6 +561,15 @@ class CurriculumCfg:
             "start_value": 20.0,   # early: easy to enter upright gate
             "end_value": 75.0,     # final: only truly upright gets the bonus
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+        },
+    )
+
+    front_foot_contact = CurrTerm(
+        func=curriculums.modify_constraint_p,
+        params={
+            "term_name": "front_foot_contact",
+            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+            "init_max_p": 0.25,   # 早期完全不约束，允许四足蹬地起身
         },
     )
 
