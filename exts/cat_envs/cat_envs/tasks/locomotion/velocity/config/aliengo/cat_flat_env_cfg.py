@@ -341,6 +341,30 @@ class RewardsCfg:
         },
     )
 
+    front_leg_default_pose = RewTerm(
+        func=custom_rewards.front_leg_default_pose_penalty,
+        weight=5e-9,   # 正权重 + 负回报 = 纯惩罚；先用 0.5 起步，看占比再调
+        params={
+            "target_angles": [
+                0.0,    # FL_hip_joint   (hip)
+                2.462,  # FL_thigh_joint (thigh)
+                -2.223,  # FL_calf_joint  (calf)
+                0.0,    # FR_hip_joint   (hip)
+                2.462,  # FR_thigh_joint (thigh)
+                -2.223,  # FR_calf_joint  (calf)
+            ],
+            "upright_pitch_deg": 60.0,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
+                    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+                ],
+                preserve_order=True,
+            ),
+        },
+    )
+
 @configclass
 class ConstraintsCfg:
     # Safety Soft constraints

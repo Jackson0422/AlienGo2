@@ -1358,3 +1358,40 @@ def joint_acceleration_penalty(
     """
     asset = env.scene[asset_cfg.name]
     return -torch.sum(torch.square(asset.data.joint_acc[:, asset_cfg.joint_ids]), dim=1)
+
+def front_leg_default_pose_penalty(
+    env: ManagerBasedRLEnv,
+    target_angles: list,
+    upright_pitch_deg: float = 60.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Quadratic penalty pulling the front-leg joints toward a target pose.
+
+    r = -|| q - q_desired ||^2     if pitch >= upright_pitch_deg
+        0                          otherwise
+
+    Pure penalty (<= 0). Use a POSITIVE weight in the cfg.
+    Pitch convention is identical to `upright_balance` / `base_pitch_task`:
+        pitch = atan2(-g_x, -g_z),  upright = +90 deg.
+
+    Args:
+        target_angles: list of desired joint angles, in the SAME order as
+            `asset_cfg.joint_names` (here: [FL_HAA, FL_HFE, FL_KFE,
+                                          FR_HAA, FR_HFE, FR_KFE]).
+        upright_pitch_deg: only apply the penalty above this pitch threshold.
+        asset_cfg: must select exactly the front-leg joints, with
+            preserve_order=True so target_angles aligns with joint_ids.
+    """
+    asset = env.scene[asset_cfg.name]
+    data = asset.data
+
+    q = data.joint_pos[:, asset_cfg.joint_ids]
+    q_desired = torch.tensor(target_angles, device=q.device, dtype=q.dtype).unsqueeze(0)
+    err_sq = torch.sum((q - q_desired) ** 2, dim=1)   # >= 0
+
+    g = data.projected_gravity_b
+    pitch = torch.atan2(-g[:, 0], -g[:, 2])
+    pitch_deg = pitch * 180.0 / math.pi
+    is_upright = (pitch_deg >= upright_pitch_deg).float()
+
+    return -err_sq * is_upright   # <= 0
