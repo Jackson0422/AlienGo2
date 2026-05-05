@@ -353,6 +353,7 @@ class ConstraintsCfg:
             "asset_cfg": SceneEntityCfg("contact_forces", body_names=".*_FOOT")
         },
     )
+    
 
 
 @configclass

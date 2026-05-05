@@ -343,7 +343,7 @@ class RewardsCfg:
 
     front_leg_default_pose = RewTerm(
         func=custom_rewards.front_leg_default_pose_penalty,
-        weight=5e-9,   # 正权重 + 负回报 = 纯惩罚；先用 0.5 起步，看占比再调
+        weight=5e-2,   # 正权重 + 负回报 = 纯惩罚；先用 0.5 起步，看占比再调
         params={
             "target_angles": [
                 0.0,    # FL_hip_joint   (hip)

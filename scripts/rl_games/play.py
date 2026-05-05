@@ -167,6 +167,26 @@ def main():
     if isinstance(obs, dict):
         obs = obs["obs"]
     timestep = 0
+
+    # debug: joint mapping (run once)
+    step = 0
+    robot = env.unwrapped.scene["robot"]
+
+    front_names = [
+        "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
+        "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+    ]
+    front_ids, _ = robot.find_joints(front_names, preserve_order=True)
+
+    rear_haa_names = ["RL_hip_joint", "RR_hip_joint"]
+    rear_haa_ids, _ = robot.find_joints(rear_haa_names, preserve_order=True)
+
+    q_dtype = robot.data.joint_pos.dtype
+    q_device = robot.data.joint_pos.device
+    front_target = torch.tensor([0.0, 2.462, -2.223, 0.0, 2.462, -2.223], device=q_device, dtype=q_dtype)
+
+    print("[debug] front joints:", list(zip(front_names, list(front_ids))))
+    print("[debug] rear HAA joints:", list(zip(rear_haa_names, list(rear_haa_ids))))
     # required: enables the flag for batched observations
     _ = agent.get_batch_size(obs, 1)
     # initialize RNN states if used
@@ -187,12 +207,36 @@ def main():
             # env stepping
             obs, _, dones, _ = env.step(actions)
 
+            # debug print every N steps (env0 only)
+            if step % 50 == 0:
+                env_id = 0
+                q_front = robot.data.joint_pos[:, front_ids]                 # [num_envs, 6]
+                err = q_front - front_target.unsqueeze(0)                   # [num_envs, 6]
+                err_sq = (err ** 2).sum(dim=1)                               # [num_envs]
+
+                g = robot.data.projected_gravity_b                           # [num_envs, 3]
+                pitch_deg = torch.atan2(-g[:, 0], -g[:, 2]) * 180.0 / math.pi
+                is_upright = pitch_deg >= 60.0
+
+                q_rear_haa = robot.data.joint_pos[:, rear_haa_ids]            # [num_envs, 2]
+
+                print(
+                    f"[step {step}] pitch={pitch_deg[env_id].item():+.1f}deg upright={bool(is_upright[env_id].item())} "
+                    f"err_sq={err_sq[env_id].item():.4f}"
+                )
+                print(f"  front q   = {q_front[env_id].tolist()}")
+                print(f"  front tgt = {front_target.tolist()}")
+                print(f"  front Δ   = {err[env_id].tolist()}")
+                print(f"  rear HAA  = {q_rear_haa[env_id].tolist()}")
+
+
             # perform operations for terminated episodes
             if len(dones) > 0:
                 # reset rnn state for terminated episodes
                 if agent.is_rnn and agent.states is not None:
                     for s in agent.states:
                         s[:, dones, :] = 0.0
+        step += 1
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
