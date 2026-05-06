@@ -335,7 +335,7 @@ class RewardsCfg:
 
     joint_acc_penalty = RewTerm(
         func=custom_rewards.joint_acceleration_penalty,
-        weight=5e-9,
+        weight=5e-8,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
         },
@@ -354,6 +354,24 @@ class RewardsCfg:
                 -2.223,  # FR_calf_joint  (calf)
             ],
             "upright_pitch_deg": 60.0,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
+                    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+                ],
+                preserve_order=True,
+            ),
+        },
+    )
+
+    front_leg_velocity = RewTerm(
+        func=custom_rewards.front_leg_velocity_penalty,
+        weight=5e-3,                       # 起步值，先看 tensorboard 占比再调
+        params={
+            "deadzone": 4.0,
+            "upright_pitch_deg": 60.0,
+            "pitch_sigma_deg": 5.0,
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=[

@@ -1395,3 +1395,40 @@ def front_leg_default_pose_penalty(
     is_upright = (pitch_deg >= upright_pitch_deg).float()
 
     return -err_sq * is_upright   # <= 0
+
+def front_leg_velocity_penalty(
+    env: ManagerBasedRLEnv,
+    deadzone: float = 4.0,
+    upright_pitch_deg: float = 60.0,
+    pitch_sigma_deg: float = 5.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Quadratic penalty on front-leg joint velocity above a deadzone,
+    only active when the robot is upright.
+
+    r = -sum_j max(0, |q_dot_j| - deadzone)^2 * gate(pitch)
+
+    - deadzone: 维稳所需的小幅前腿摆动不会被罚（典型 < 4 rad/s）
+    - gate(pitch): 软门控（sigmoid），起身阶段 pitch < 60° 时基本为 0，
+      避免破坏已经学到的起身策略。
+
+    Pitch 公式与 base_pitch_task / upright_balance 一致：
+        pitch = atan2(-g_x, -g_z)，upright = +90°。
+
+    使用：weight 取正（这个函数本身返回 <= 0），与 front_leg_default_pose_penalty 同号。
+    """
+    asset = env.scene[asset_cfg.name]
+    data = asset.data
+
+    # --- 速度超出死区的部分 ---
+    qd = data.joint_vel[:, asset_cfg.joint_ids]
+    excess = (qd.abs() - deadzone).clamp(min=0.0)
+    err = (excess ** 2).sum(dim=1)              # (N,)，>= 0
+
+    # --- 软 pitch 门控（sigmoid，平滑过渡）---
+    g = data.projected_gravity_b
+    pitch = torch.atan2(-g[:, 0], -g[:, 2])
+    pitch_deg = pitch * 180.0 / math.pi
+    gate = torch.sigmoid((pitch_deg - upright_pitch_deg) / pitch_sigma_deg)
+
+    return -err * gate                          # <= 0
