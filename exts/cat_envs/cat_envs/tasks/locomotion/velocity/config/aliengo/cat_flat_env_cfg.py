@@ -287,10 +287,16 @@ class RewardsCfg:
     # -- task: velocity tracking (minimal weight for standing task)
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp,
-        weight=0.0,  # Reduced from 0.1 - we want standing, not walking
+        weight=0.5,  # Reduced from 0.1 - we want standing, not walking
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
 
+    track_ang_vel_z_exp = RewTerm(
+        func=mdp.track_ang_vel_z_exp,
+        weight=0.25,
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+    
     # Base height:  r = -(z - z^c)^2
     base_height = RewTerm(
         func=custom_rewards.base_height_task,
@@ -466,6 +472,17 @@ class ConstraintsCfg:
             "threshold": 1.0,
             "asset_cfg": SceneEntityCfg(
                 "contact_forces", body_names=["FL_calf", "FR_calf"]
+            ),
+        },
+    )
+
+    joint_position_rear_haa = ConstraintTerm(
+        func=constraints.joint_position,
+        max_p=0.25,
+        params={
+            "limit": 0.15,  # rad ≈ 8.6°，先取中间值
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=["RL_hip_joint", "RR_hip_joint"]
             ),
         },
     )
