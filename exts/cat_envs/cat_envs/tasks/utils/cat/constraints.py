@@ -408,3 +408,50 @@ def knee_height(
     robot = env.scene[asset_cfg.name]
     knee_z = robot.data.body_pos_w[:, asset_cfg.body_ids, 2]
     return torch.any(knee_z < min_z, dim=1)
+
+
+def air_time_when_upright(
+    env: ManagerBasedRLEnv,
+    limit: float,
+    upright_pitch_deg: float,
+    min_height: float,
+    asset_cfg: SceneEntityCfg,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Air-time constraint that is only active once the robot is upright.
+
+    Returns (limit - last_air_time) on the touchdown frame, identical in
+    spirit to :func:`air_time` (CaT), but gated by:
+        pitch_deg >= upright_pitch_deg   AND   base_z >= min_height
+
+    Below the gate the term is identically 0, so it does not interfere
+    with the rear-up learning phase. Above the gate, a touchdown whose
+    preceding air time is shorter than ``limit`` produces a positive
+    violation, which the CaT curriculum maps to a higher termination
+    probability.
+
+    Pitch convention (consistent with reward functions in this repo):
+        pitch_deg = atan2(-g_x, -g_z) * 180/pi
+        upright (fully reared) corresponds to pitch_deg = +90.
+
+    Args:
+        limit: Minimum desired air time per step (seconds).
+        upright_pitch_deg: Pitch threshold above which the constraint activates.
+        min_height: Base z threshold above which the constraint activates.
+        asset_cfg: Contact sensor config selecting the feet to monitor
+            (typically the two rear calves on Aliengo).
+        robot_cfg: Robot articulation config (used for pitch + base height).
+    """
+    contact_sensor = env.scene[asset_cfg.name]
+    touchdown = contact_sensor.compute_first_contact(env.step_dt)[:, asset_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, asset_cfg.body_ids]
+
+    asset = env.scene[robot_cfg.name]
+    g = asset.data.projected_gravity_b
+    pitch_deg = torch.atan2(-g[:, 0], -g[:, 2]) * (180.0 / torch.pi)
+    upright_gate = (
+        (pitch_deg >= upright_pitch_deg)
+        & (asset.data.root_pos_w[:, 2] >= min_height)
+    ).float().unsqueeze(1)
+
+    return (limit - last_air_time) * touchdown.float() * upright_gate

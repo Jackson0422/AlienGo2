@@ -229,12 +229,76 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.5, 1.25),
-            "dynamic_friction_range": (0.5, 1.25),
-            "restitution_range": (0.0, 0.0),
+            "static_friction_range": (0.3, 1.5), # (0.5, 1.25) is the default static friction range for the robot
+            "dynamic_friction_range": (0.3, 1.5), # (0.5, 1.25) is the default dynamic friction range for the robot on the ground
+            "restitution_range": (0.0, 0.1), #（0.0, 0.0） is the default restitution range for the robot
             "num_buckets": 100,
         },
     )
+
+    # =========================================================================
+    # Domain randomization additions (for zero-shot sim-to-sim / sim-to-real)
+    # =========================================================================
+
+    # --- (a) trunk mass: ±15% scaling ---
+    randomize_trunk_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="trunk"),
+            "mass_distribution_params": (0.97, 1.03),
+            "operation": "scale",
+            "distribution": "uniform",
+            "recompute_inertia": True,
+        },
+    )
+
+    # --- (b) leg link mass: ±10% scaling on hip / thigh / calf ---
+    randomize_leg_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=[".*_hip", ".*_thigh", ".*_calf"]
+            ),
+            "mass_distribution_params": (0.97, 1.03),
+            "operation": "scale",
+            "distribution": "uniform",
+            "recompute_inertia": True,
+        },
+    )
+
+    # --- (d) PD gain randomization: ±15% on kp/kd. This is the single most
+    #         important term for sim-to-sim transfer because the PD law is the
+    #         entire bridge between policy q_des and joint torques. IdealPDActuator
+    #         is explicit, so "reset" mode is fine (every episode re-samples).
+    randomize_pd_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stiffness_distribution_params": (0.95, 1.05),
+            "damping_distribution_params":   (0.95, 1.05),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+
+    # --- (e) external force pulse on trunk (in addition to push_robot above).
+    #         More "physical" than velocity-setting pushes; better for cross-engine
+    #         transfer.
+    # push_trunk_force = EventTerm(
+    #     func=mdp.apply_external_force_torque,
+    #     mode="interval",
+    #     is_global_time=True,
+    #     interval_range_s=(5.0, 8.0),
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="trunk"),
+    #         "force_range":  (-5.0, 5.0),   # ~12 kg trunk → ~0.012 m/s impulse per step
+    #         "torque_range": (-0.5,  0.5),
+    #     },
+    # )
+
     # give different position and velocity range for different environments
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
@@ -260,23 +324,9 @@ class EventCfg:
         func=mdp.reset_joints_by_scale,
         mode="reset",
         params={
-            "position_range": (1.0, 1.0),
-            "velocity_range": (0.0, 0.0),
+            "position_range": (0.9, 1.1), # (1.0, 1.0) is the default position range for the robot
+            "velocity_range": (-0.1, 0.1), # (0.0, 0.0) is the default velocity range for the robot
         },
-    )
-
-    # interval
-
-    # set pushing every step, as only some of the environments are chosen
-    # as in the isaacgym cat version
-    push_robot = EventTerm(
-        # Standard push_by_setting_velocity also works, but interestingly results
-        # in a different gait
-        func=events.push_by_setting_velocity_with_random_envs,
-        mode="interval",
-        is_global_time=True,
-        interval_range_s=(1.5, 3.0), # 0.005 is the default interval for the robot
-        params={"velocity_range": {"x": (-0.25, 0.25), "y": (-0.25, 0.25)}}, # (-0.5, 0.5) is the default velocity range for the robot
     )
 
 
@@ -389,6 +439,26 @@ class RewardsCfg:
         },
     )
 
+    # Per-foot Gaussian reward on rear foot swing height. Complements the
+    # `rear_air_time_when_upright` constraint: that one penalizes too-short
+    # air time on touchdown (negative feedback), this one positively rewards
+    # the foot for tracking a desired clearance during swing. Together they
+    # encourage real, well-shaped stepping once the robot is upright.
+    # 后脚摆动高度高斯奖励：和 `rear_air_time_when_upright` 约束互补——
+    # 约束在落地帧惩罚"换步太快"（负反馈），这里在摆动相奖励"抬脚到位"
+    # （正反馈）。叠在一起鼓励真正的、有形状的迈步动作。
+    rear_foot_swing_height = RewTerm(
+        func=custom_rewards.rear_foot_swing_height,
+        weight=0.3,
+        params={
+            "target_height": 0.08,          # 8 cm 期望抬脚高度
+            "sigma": 0.03,                  # 3 cm 高斯容差
+            "upright_pitch_deg": 70.0,      # 与 air-time 约束一致
+            "min_base_height": 0.55,        # 与 air-time 约束一致
+            "contact_threshold": 1.0,
+        },
+    )
+
 @configclass
 class ConstraintsCfg:
     # Safety Soft constraints
@@ -483,6 +553,24 @@ class ConstraintsCfg:
             "limit": 0.15,  # rad ≈ 8.6°，先取中间值
             "asset_cfg": SceneEntityCfg(
                 "robot", joint_names=["RL_hip_joint", "RR_hip_joint"]
+            ),
+        },
+    )
+
+    # Air-time constraint on the two rear feet, only active once the robot
+    # is upright. Forces the policy to actually lift the rear feet during
+    # standing (prevents the "one foot glued, body rotates" failure mode).
+    # 立起来之后才生效的后脚 air-time 约束：强制策略真的交替抬脚，
+    # 避免出现一只脚粘地、身体绕该脚旋转的失效模式。
+    rear_air_time_when_upright = ConstraintTerm(
+        func=constraints.air_time_when_upright,
+        max_p=0.25,
+        params={
+            "limit": 0.25,                  # 每次腾空至少 0.35 s
+            "upright_pitch_deg": 70.0,      # pitch >= 70° 才生效
+            "min_height": 0.55,             # 同时 base 高度 >= 0.55 m
+            "asset_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["RL_calf", "RR_calf"]
             ),
         },
     )
@@ -632,6 +720,23 @@ class CurriculumCfg:
         },
     )
 
+    # Curriculum for the upright air-time constraint:
+    # ramp max_p from 1/20 = 0.05 (curriculum default start) up to 0.25,
+    # same horizon as the other soft constraints. The rear-up phase is
+    # protected by the in-function pitch/height gate (term is identically
+    # 0 below the gate), not by the curriculum, so init_max_p=0.25 is safe.
+    # 渐进策略：与其他软约束一致，max_p 从 0.05 线性升到 0.25。
+    # rear-up 阶段通过函数内部的 pitch + height gate 保护（gate 不满足时
+    # 整个 term 为 0），不需要靠 curriculum 兜底。
+    rear_air_time_when_upright = CurrTerm(
+        func=curriculums.modify_constraint_p,
+        params={
+            "term_name": "rear_air_time_when_upright",
+            "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
+            "init_max_p": 0.25,
+        },
+    )
+
 ##
 # Environment configuration
 ##
@@ -688,7 +793,14 @@ class AlienGoFlatEnvCfg_PLAY(AlienGoFlatEnvCfg):
 
         # disable randomization for play
         self.observations.policy.enable_corruption = False
-        self.events.push_robot = None
+
+        # interval-mode events that would pollute the evaluation video
+        # self.events.push_trunk_force = None
+        # (optional) keep evaluation at nominal physics for reproducibility:
+        # comment these out if you want one randomized sample per evaluation
+        self.events.randomize_trunk_mass = None
+        self.events.randomize_leg_mass = None
+        self.events.randomize_pd_gains = None
 
         # set velocity command
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)

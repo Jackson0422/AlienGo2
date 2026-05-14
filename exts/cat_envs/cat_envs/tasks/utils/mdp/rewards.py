@@ -1432,3 +1432,66 @@ def front_leg_velocity_penalty(
     gate = torch.sigmoid((pitch_deg - upright_pitch_deg) / pitch_sigma_deg)
 
     return -err * gate                          # <= 0
+
+def rear_foot_swing_height(
+    env: ManagerBasedRLEnv,
+    target_height: float = 0.08,
+    sigma: float = 0.03,
+    upright_pitch_deg: float = 70.0,
+    min_base_height: float = 0.55,
+    contact_threshold: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    foot_cfg: SceneEntityCfg = SceneEntityCfg(
+        "robot", body_names=["RL_calf", "RR_calf"]
+    ),
+    contact_cfg: SceneEntityCfg = SceneEntityCfg(
+        "contact_forces", body_names=["RL_calf", "RR_calf"]
+    ),
+) -> torch.Tensor:
+    """Per-foot Gaussian reward on rear foot height while in swing.
+
+    For each rear foot:
+        in swing  (||F|| < contact_threshold):
+            r_i = exp(-((z_foot_i - target_height) / sigma)^2)
+        in stance:
+            r_i = 0   (no reward, no penalty)
+
+    Output: mean over the two rear feet, gated by:
+        pitch_deg >= upright_pitch_deg  AND  base_z >= min_base_height
+    so it does not interfere with the rear-up learning phase.
+
+    Notes:
+        - `foot_z` uses `_get_foot_pos_from_calf`, which applies the
+          0.25 m calf -z offset rotated by the calf quaternion. That is
+          the TRUE foot-contact point, not the calf-link origin, so the
+          values are directly the height of the foot above the ground.
+        - Swing mask uses the contact-force magnitude (consistent with
+          the rest of this file), not foot height, to avoid a degenerate
+          solution where the policy keeps the foot at target_height with
+          ground contact still applied.
+    """
+    asset = env.scene[asset_cfg.name]
+
+    # True foot-bottom world Z (uses the calf-to-foot helper).
+    foot_z = _get_foot_pos_from_calf(asset, foot_cfg)[..., 2]      # (N, 2)
+
+    # Swing mask: net contact force magnitude below threshold.
+    contact_sensor = env.scene[contact_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
+    force_norms = torch.norm(forces, dim=-1)                       # (N, 2)
+    in_swing = (force_norms < contact_threshold).float()           # (N, 2)
+
+    # Gaussian tracking of foot height to target, only in swing.
+    track = torch.exp(-((foot_z - target_height) / sigma) ** 2)    # (N, 2)
+    per_foot = track * in_swing                                    # (N, 2)
+    reward = per_foot.mean(dim=1)                                  # (N,)
+
+    # Upright + base-height gates.
+    g = asset.data.projected_gravity_b
+    pitch_deg = torch.atan2(-g[:, 0], -g[:, 2]) * (180.0 / math.pi)
+    pitch_gate = (pitch_deg >= upright_pitch_deg).float()
+
+    h = asset.data.root_pos_w[:, 2]
+    height_gate = torch.sigmoid((h - min_base_height) / 0.02)
+
+    return reward * pitch_gate * height_gate

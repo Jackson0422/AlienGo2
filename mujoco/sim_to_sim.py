@@ -65,8 +65,8 @@ import obs_builder as ob
 import policy_loader as pl
 
 
-DEFAULT_URDF = "exts/cat_envs/cat_envs/assets/Robots/odri/AlienGo_description/aliengo.urdf"
-DEFAULT_RUN = "logs/rl_games/solo_cat/2026-05-07_21-28-14"
+DEFAULT_URDF = "mujoco/aliengo_description/aliengo.xml"
+DEFAULT_RUN = "logs/rl_games/solo_cat/2026-05-14_07-28-05"
 
 
 def parse_args() -> argparse.Namespace:

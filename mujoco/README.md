@@ -75,19 +75,42 @@ stance (joints `0/0.9/-1.7`), and around `t = 1 s` it reaches the upright
 bipedal pose (pitch ≈ +85 deg, base z ≈ 0.68 m).
 
 Beyond that, the MuJoCo dynamics differ from PhysX — solver type, contact
-stiffness, joint friction model — so the robot may lose balance somewhat
-earlier than it does in Isaac Lab. The policy itself is byte-identical; the
-behavior delta is pure physics. If perfect parity is needed, the typical
-next steps are:
+stiffness, joint friction model — so without further tuning the robot loses
+balance noticeably earlier than it does in Isaac Lab. The policy itself is
+byte-identical; the behavior delta is pure physics.
 
-- Tighten MuJoCo solver tolerances (`option.iterations`, `option.tolerance`).
-- Set `solref`/`solimp` on the foot geoms to match PhysX contact stiffness.
-- Add small friction loss on the joints to match the slight damping introduced
-  by PhysX.
+### Step-A physics tuning (applied by default)
 
-These tunings are intentionally NOT applied here, so the script is faithful
-to "load the Isaac Lab policy verbatim and see how it behaves in vanilla
-MuJoCo".
+To close the PhysX -> MuJoCo gap on the rear-stand task, `model_builder.py`
+applies a conservative set of fixes during model construction. All of them
+are exposed as module-level constants near the top of the file so you can
+tune them without touching `build_model`:
+
+| Constant | Default | What it does |
+|---|---|---|
+| `JOINT_DAMPING` | `0.05` N·m·s/rad | Light viscous damping on every hinge joint. Mimics the small numerical damping PhysX gets for free from its low-iteration implicit solver; kills the high-frequency joint chatter that otherwise destabilises the rear-stand policy in MuJoCo. |
+| `JOINT_FRICTIONLOSS` | `0.05` N·m | Light Coulomb friction at the joints. Same motivation as above. |
+| `FLOOR_TORSIONAL_FRICTION` | `0.05` | Bumped from MuJoCo's default `0.005`. At the default the rear-foot contact patch offers essentially no resistance to body-yaw rotation, which never showed up during PhysX training but is unique to bipedal stance. |
+| `CONTACT_SOLREF` | `[2*SIM_DT, 1.0]` | Contact time-constant set to 2 physics steps (=0.01 s), critically damped. Applied to floor and foot geoms; brings MuJoCo's response time closer to PhysX's "few-iteration soft contact". |
+| `CONTACT_SOLIMP` | `[0.9, 0.92, 0.001, 0.5, 2.0]` | Slightly loosened `dmax` compared to MuJoCo's default `0.95`. |
+| `SOLVER_ITERATIONS` / `SOLVER_TOLERANCE` | `50` / `1e-8` | Switch to Newton solver. Converges in <10 iterations on this smooth contact geometry and produces lower frame-to-frame contact-force noise, which matters because the policy is open-loop driven by `data.qpos`/`data.qvel`. |
+
+These values are intentionally small. Raising them further starts to
+diverge from the Isaac Lab training distribution; if you need bigger
+changes, the right move is to add (matching) domain randomization on the
+Isaac Lab side and retrain, rather than push MuJoCo further away from
+PhysX.
+
+If you want to recover the original "load policy verbatim into vanilla
+MuJoCo" behaviour for a baseline comparison, set:
+
+```python
+JOINT_DAMPING = 0.0
+JOINT_FRICTIONLOSS = 0.0
+FLOOR_TORSIONAL_FRICTION = 0.005
+# and remove the floor.solref / floor.solimp / foot.solref / foot.solimp
+# assignments inside build_model().
+```
 
 ## Headless rendering note
 

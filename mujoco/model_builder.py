@@ -56,14 +56,60 @@ JOINT_EFFORT_LIMIT: float = 33.5      # IdealPDActuator effort_limit
 JOINT_VELOCITY_LIMIT: float = 21.0    # informational; IdealPDActuator does NOT clip on velocity
 JOINT_ARMATURE: float = 0.00036207
 
-# Per-joint URDF-declared effort limits (used by MuJoCo `actuatorfrcrange`)
-URDF_EFFORT_HIP_THIGH: float = 35.278
-URDF_EFFORT_CALF: float = 44.4
-
-# Simulation timing (matches env.yaml).
+# Simulation timing (matches env.yaml). Declared early so the step-A
+# `CONTACT_SOLREF` below can express its time-constant in units of SIM_DT.
 SIM_DT: float = 0.005
 DECIMATION: int = 4
 POLICY_DT: float = SIM_DT * DECIMATION  # 0.02 s, 50 Hz
+
+# ---------------------------------------------------------------------------
+# Step-A sim-to-sim tuning (close the PhysX -> MuJoCo physics gap).
+#
+# These do NOT exist in Isaac Lab's IdealPDActuator / PhysX setup, but PhysX
+# silently introduces a small amount of numerical damping via its low-iteration
+# implicit solver, and PhysX's friction model has effective torsional friction
+# at the contact patch. MuJoCo with default settings has neither, which is the
+# main reason the rear-stand policy goes unstable in MuJoCo even though the
+# observation pipeline is byte-identical.
+#
+# The three knobs below are intentionally small. Larger values will start to
+# diverge from the Isaac Lab training distribution. Tune in this order:
+#   1) JOINT_DAMPING / JOINT_FRICTIONLOSS  (kills high-frequency joint chatter)
+#   2) FLOOR_TORSIONAL_FRICTION            (stops the rear feet from spinning
+#                                           freely about z while bipedal-standing)
+#   3) CONTACT_SOLREF / CONTACT_SOLIMP     (soften ground contact toward
+#                                           PhysX's "few-iteration" feel)
+# ---------------------------------------------------------------------------
+JOINT_DAMPING: float = 0.05         # N·m·s/rad, mimics PhysX implicit damping
+JOINT_FRICTIONLOSS: float = 0.05    # N·m, light Coulomb friction at the joints
+
+# Floor friction (slide, torsion, roll). Isaac Lab terrain friction = 1.0
+# (slide). MuJoCo default torsion of 0.005 is essentially zero for a
+# bipedal-stance robot: the rear feet pivot freely about the body z-axis,
+# producing a yaw-drift the policy never had to handle in training.
+FLOOR_SLIDE_FRICTION: float = 1.0
+FLOOR_TORSIONAL_FRICTION: float = 0.05
+FLOOR_ROLLING_FRICTION: float = 0.0001
+
+# Contact compliance (solref = [time_const, damp_ratio]; solimp = [dmin, dmax,
+# width, midpoint, power]). Defaults are [0.02, 1.0] and [0.9, 0.95, 0.001,
+# 0.5, 2]. We loosen dmax slightly and set time_const = 2*SIM_DT = 0.01s
+# explicitly so the contact response time matches the policy step. This
+# brings MuJoCo closer to PhysX's "soft" few-iteration contact feel.
+CONTACT_SOLREF: List[float] = [2.0 * SIM_DT, 1.0]
+CONTACT_SOLIMP: List[float] = [0.9, 0.92, 0.001, 0.5, 2.0]
+
+# Solver: Newton + tighter tolerance + capped iterations.
+# Default solver is CG with iterations=100, tolerance=1e-8.
+# Newton converges in fewer iterations for our smooth contact geometry and
+# produces a more deterministic contact force per step (smaller frame-to-frame
+# noise), which helps the open-loop replay of a deterministic policy.
+SOLVER_ITERATIONS: int = 50
+SOLVER_TOLERANCE: float = 1.0e-8
+
+# Per-joint URDF-declared effort limits (used by MuJoCo `actuatorfrcrange`)
+URDF_EFFORT_HIP_THIGH: float = 35.278
+URDF_EFFORT_CALF: float = 44.4
 
 # Base init pose (env.yaml, init_state.pos / .rot).
 BASE_INIT_POS: np.ndarray = np.array([0.0, 0.0, 0.4], dtype=np.float64)
@@ -131,109 +177,175 @@ def build_model(urdf_path: str) -> tuple[mujoco.MjModel, mujoco.MjData, ModelInf
     spec = mujoco.MjSpec.from_file(urdf_path)
 
     # ---- name the foot collision geoms BEFORE compile so we can find them later.
-    # Each `<leg>_foot` body in the URDF has one collision sphere; after fixed-joint
-    # merging it ends up on the corresponding `<leg>_calf` body at z=-0.25.
+    # In this MJCF (aliengo.xml) every `<leg>_calf` body carries TWO sphere
+    # geoms at z=-0.25: a visually-tagged `<leg>_foot` sphere with
+    # `contype=0 conaffinity=0` (purely cosmetic, the dark ball you see in
+    # renders) and an **unnamed** sphere of size 0.0265 that uses the file
+    # default `contype=1 conaffinity=1` and is the one that actually
+    # collides with the floor. We pick the latter (sphere + contype!=0) and
+    # give it the canonical name `<leg>_foot_geom`, so the look-up table
+    # `info.foot_geom_id_all` further down keeps working unchanged.
+    #
+    # Step-A: apply matched friction + solref/solimp to the foot geoms so the
+    # contact parameters are symmetric with the floor side. MuJoCo's per-pair
+    # mixing rule picks one value from each geom (defaults: max for friction,
+    # min for solref), so leaving the foot at MJCF defaults
+    # (`friction="1 0.3 0.3"`) would silently undo the floor-side change. We
+    # set the same numbers on both sides to make the effective contact
+    # behavior independent of the mixing rule.
+    foot_friction = [
+        FLOOR_SLIDE_FRICTION,
+        FLOOR_TORSIONAL_FRICTION,
+        FLOOR_ROLLING_FRICTION,
+    ]
     for body in spec.bodies:
         name = body.name or ""
-        if name.endswith("_foot") and name != "_foot":
+        if name.endswith("_calf") and name != "_calf":
+            leg = name.removesuffix("_calf")
             for g in body.geoms:
-                g.name = _foot_geom_name(name.removesuffix("_foot"))
+                if (
+                    g.type == mujoco.mjtGeom.mjGEOM_SPHERE
+                    and (g.contype != 0 or g.conaffinity != 0)
+                ):
+                    g.name = _foot_geom_name(leg)
+                    g.friction = foot_friction
+                    g.solref = CONTACT_SOLREF
+                    g.solimp = CONTACT_SOLIMP
+                    break
 
     # ---- disable self-collisions on the robot (matches odri.py:104
-    # `enabled_self_collisions=False`). Strategy: put all robot geoms on
-    # `contype=2, conaffinity=1`, and the floor we'll add later on
+    # `enabled_self_collisions=False`). Strategy: put all robot collision
+    # geoms on `contype=2, conaffinity=1`, and the floor we patch below on
     # `contype=1, conaffinity=2`. Two robot geoms then share neither a
     # contype-vs-conaffinity bit, so they never collide; floor-vs-robot
     # collides on both sides.
+    #
+    # IMPORTANT (MJCF specific): aliengo.xml explicitly declares the visual
+    # meshes (trunk/hip/thigh/calf) and the visual `<leg>_foot` ball as
+    # `contype=0 conaffinity=0` -- they are decorative and must not enter
+    # contact. Blindly overwriting their bits to (2,1) would silently
+    # promote them into the collision set and produce phantom contacts
+    # (e.g. the trunk mesh colliding with the floor at its bounding-box
+    # extents). We therefore leave any geom already declared as
+    # non-colliding alone.
     for body in spec.bodies:
         for g in body.geoms:
+            if g.contype == 0 and g.conaffinity == 0:
+                continue
             g.contype = 2
             g.conaffinity = 1
 
-    # ---- add a free joint at the base body so the robot can move in the world.
-    # URDF root link "base" is at the top of worldbody children.
-    spec.worldbody.bodies[0].add_freejoint()
+    # ---- The MJCF (aliengo.xml line 52) already declares
+    # `<joint type="free"/>` on the root `trunk` body, so we do NOT add
+    # another freejoint here. MjSpec compile would otherwise raise
+    # "free joint not allowed: body already has a free joint".
 
-    # ---- armature on every hinge joint (IdealPDActuator armature in Isaac Lab).
+    # ---- armature + step-A damping/frictionloss on every hinge joint.
+    #
+    # Armature matches IdealPDActuator armature in Isaac Lab.
+    #
+    # Damping/frictionloss are NOT present in IdealPDActuator (Isaac Lab
+    # implements damping as a control-side -kd*qd term, not joint-side
+    # viscous). However, PhysX's low-iteration implicit solver silently
+    # introduces a small numerical damping that MuJoCo's IMPLICITFAST
+    # integrator does not reproduce. The values below are tuned to be small
+    # enough that the gap to Isaac Lab's training distribution stays narrow,
+    # but large enough to suppress the high-frequency joint chatter that
+    # makes the rear-stand policy diverge in MuJoCo.
+    #
+    # Note on shapes (MuJoCo 3.8 MjSpec):
+    #   - `armature` and `frictionloss` are exposed as scalar floats.
+    #   - `damping` (and `stiffness`) are exposed as length-3 ndarrays, with
+    #     elements [0],[1],[2] mapping to the (up to) 3 DoFs of the joint.
+    #     For a 1-DoF hinge, only element [0] is meaningful; we leave [1],[2]
+    #     at zero. Assigning a scalar raises TypeError.
+    damping_vec = np.array([JOINT_DAMPING, 0.0, 0.0], dtype=np.float64)
     for body in spec.bodies:
         for j in body.joints:
             if j.type == mujoco.mjtJoint.mjJNT_HINGE:
                 j.armature = JOINT_ARMATURE
-                # Damping was 0 in URDF; keep it that way — Isaac Lab's IdealPDActuator
-                # implements damping as a control-side term, not joint-side viscous.
+                j.damping = damping_vec
+                j.frictionloss = JOINT_FRICTIONLOSS
 
     # ---- simulation options.
     spec.option.timestep = SIM_DT
     spec.option.gravity = [0.0, 0.0, -9.81]
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    # Step-A: use Newton with a tight tolerance. Newton typically converges
+    # in <10 iterations for our smooth contact geometry, yielding lower
+    # frame-to-frame contact-force noise than CG. This matters because the
+    # rear-stand policy is open-loop driven by `data.qpos`/`data.qvel`; noisy
+    # contact forces propagate into joint velocities and into the next
+    # observation.
+    spec.option.solver = mujoco.mjtSolver.mjSOL_NEWTON
+    spec.option.iterations = SOLVER_ITERATIONS
+    spec.option.tolerance = SOLVER_TOLERANCE
 
     # Offscreen framebuffer size — needed for headless EGL rendering at 1280x720.
     # Set above the largest render resolution we ever request.
     spec.visual.global_.offwidth = 1920
     spec.visual.global_.offheight = 1080
 
-    # ---- world: floor plane + light + tracking camera.
-    wb = spec.worldbody
-    floor = wb.add_geom(
-        name="floor",
-        type=mujoco.mjtGeom.mjGEOM_PLANE,
-        size=[20.0, 20.0, 0.1],
-        rgba=[0.45, 0.5, 0.55, 1.0],
-    )
-    # Match Isaac Lab terrain friction (static=1.0, dynamic=1.0).
-    floor.friction = [1.0, 0.005, 0.0001]
-    # See self-collision discussion above: floor uses contype=1, conaffinity=2
-    # so it collides only with robot geoms (contype=2, conaffinity=1), never
-    # with other floor-like geoms.
-    floor.contype = 1
-    floor.conaffinity = 2
-
-    wb.add_light(
-        pos=[0.0, 0.0, 3.0],
-        castshadow=False,
-        diffuse=[0.7, 0.7, 0.7],
-        ambient=[0.4, 0.4, 0.4],
-    )
-    wb.add_camera(
-        name="track",
-        mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACKCOM,
-        pos=[1.6, -1.6, 0.9],
-        xyaxes=[1.0, 1.0, 0.0, -0.35, 0.35, 1.3],
-    )
-
-    # ---- one motor actuator per actuated hinge joint, in MuJoCo's natural
-    # joint order (FR, FL, RR, RL). We compute PD torque in Python and write
-    # to data.ctrl, so gear=1 motors are appropriate.
-    mj_joint_order_in_urdf = [
-        "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-        "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
-        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-    ]
-    for jn in mj_joint_order_in_urdf:
-        eff = URDF_EFFORT_CALF if jn.endswith("_calf_joint") else URDF_EFFORT_HIP_THIGH
-        # Apply IsaacLab IdealPDActuator effort_limit (33.5 N·m), not URDF's 35.278/44.4.
-        # We clip in Python anyway, but constrain at actuator level too to be safe.
-        eff = min(eff, JOINT_EFFORT_LIMIT) if jn.endswith("_calf_joint") else min(eff, JOINT_EFFORT_LIMIT)
-        spec.add_actuator(
-            name=jn,
-            trntype=mujoco.mjtTrn.mjTRN_JOINT,
-            target=jn,
-            gear=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            ctrllimited=1,
-            ctrlrange=[-eff, eff],
-            forcelimited=1,
-            forcerange=[-eff, eff],
+    # ---- world: patch the existing floor / keep the existing light /
+    # tracking camera. The MJCF already provides:
+    #   - <geom name="floor" type="plane" .../>            (line 48)
+    #   - <light directional="true" .../>                  (line 46)
+    #   - <camera name="track" mode="trackcom" .../>       (line 47)
+    # We do NOT add duplicates (would just shadow/overlap). We just patch
+    # the floor's friction / solref / solimp / contype-conaffinity to the
+    # sim-to-sim Step-A values, mirroring what we set on the foot side
+    # above so that MuJoCo's per-pair mixing rule is a no-op.
+    floor_patched = False
+    for g in spec.worldbody.geoms:
+        if g.name == "floor":
+            g.friction = [
+                FLOOR_SLIDE_FRICTION,
+                FLOOR_TORSIONAL_FRICTION,
+                FLOOR_ROLLING_FRICTION,
+            ]
+            g.solref = CONTACT_SOLREF
+            g.solimp = CONTACT_SOLIMP
+            g.contype = 1
+            g.conaffinity = 2
+            floor_patched = True
+            break
+    if not floor_patched:
+        raise RuntimeError(
+            "MJCF must define a worldbody geom named 'floor' "
+            "(expected for sim-to-sim contact tuning)."
         )
+
+    # ---- The MJCF (aliengo.xml line 142-156) already declares 12
+    # <motor gear="1" joint="..."/> actuators, one per hinge joint. Their
+    # `name=` attributes exactly match `ISAAC_JOINT_NAMES` (the lookup at
+    # the end of build_model uses `mj_name2id(mjOBJ_ACTUATOR, name)`), so
+    # we do NOT add a second set here -- doing so would compile-time fail
+    # with duplicate transmission targets.
+    #
+    # The MJCF default sets ctrlrange="-44.4 44.4" (wider than IsaacLab's
+    # IdealPDActuator effort_limit=33.5). This is harmless because
+    # `compute_pd_torque()` in sim_to_sim.py already clips to
+    # ±JOINT_EFFORT_LIMIT before writing to data.ctrl, so the MJCF
+    # ctrlrange is never reached and the effective behavior is identical
+    # to URDF-built models that had forcerange/ctrlrange set to ±33.5
+    # at actuator level.
 
     model = spec.compile()
     data = mujoco.MjData(model)
 
     # ---- build the lookup tables.
     info = ModelInfo()
-    info.base_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")
+    # Robot root body: MJCF calls it "trunk", the legacy URDF called it
+    # "base". Rather than hard-coding either name, find the first body
+    # whose parent is world (body_parentid == 0). For our setup that is
+    # unambiguously the robot root.
+    info.base_body_id = -1
+    for b in range(1, model.nbody):
+        if model.body_parentid[b] == 0:
+            info.base_body_id = b
+            break
     if info.base_body_id < 0:
-        raise RuntimeError("base body not found in compiled model")
+        raise RuntimeError("robot root body not found in compiled model")
     # The free joint is the first (and only) free joint we added; it lives on `base`.
     # qposaddr / dofadr are 0 in this layout, but we read them via the joint id for safety.
     base_jid = -1
@@ -246,11 +358,25 @@ def build_model(urdf_path: str) -> tuple[mujoco.MjModel, mujoco.MjData, ModelInf
     info.base_qpos_addr = int(model.jnt_qposadr[base_jid])
     info.base_qvel_addr = int(model.jnt_dofadr[base_jid])
 
+    # Build a joint_id -> actuator_id reverse-lookup table by reading the
+    # compiled `actuator_trnid`. We do this instead of
+    # `mj_name2id(mjOBJ_ACTUATOR, joint_name)` because the MJCF names its
+    # motors "FR_hip" / "FR_thigh" / "FR_calf" while the joints they drive
+    # are named "FR_hip_joint" etc. (aliengo.xml line 144-155 vs 61-71).
+    # The transmission target is the joint, so trnid is always reliable.
+    joint_to_actuator: Dict[int, int] = {}
+    for aid in range(model.nu):
+        if model.actuator_trntype[aid] == mujoco.mjtTrn.mjTRN_JOINT:
+            jid_for_aid = int(model.actuator_trnid[aid, 0])
+            joint_to_actuator[jid_for_aid] = aid
+
     for i, name in enumerate(ISAAC_JOINT_NAMES):
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-        aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
-        if jid < 0 or aid < 0:
-            raise RuntimeError(f"joint/actuator missing: {name}")
+        if jid < 0:
+            raise RuntimeError(f"joint missing: {name}")
+        aid = joint_to_actuator.get(jid, -1)
+        if aid < 0:
+            raise RuntimeError(f"no motor actuator drives joint: {name}")
         info.isaac_joint_qpos_addr[i] = model.jnt_qposadr[jid]
         info.isaac_joint_qvel_addr[i] = model.jnt_dofadr[jid]
         info.isaac_joint_actuator_id[i] = aid
