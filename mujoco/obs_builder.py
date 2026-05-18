@@ -163,14 +163,14 @@ def build_obs(
     base_quat_wxyz = base_qpos[3:7]
 
     base_qvel = data.qvel[info.base_qvel_addr : info.base_qvel_addr + 6]
+
+    # MuJoCo free joint:
+    # qvel[:3]  = base linear velocity, usually treated as world-frame
+    # qvel[3:6] = base angular velocity in body frame
     base_lin_vel_w = base_qvel[:3]
-    base_ang_vel_w = base_qvel[3:6]
-    # MuJoCo free joint qvel[:3] is linear velocity of the body frame in WORLD axes
-    # at the body's origin; qvel[3:6] is angular velocity in WORLD axes.
-    # Isaac Lab root_lin_vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
-    # — the velocity vector expressed in body frame. So we apply the same rotation.
+    base_ang_vel_b = base_qvel[3:6]
+
     base_lin_vel_b = _quat_rotate_inverse_wxyz(base_quat_wxyz, base_lin_vel_w)
-    base_ang_vel_b = _quat_rotate_inverse_wxyz(base_quat_wxyz, base_ang_vel_w)
     projected_grav_b = _quat_rotate_inverse_wxyz(
         base_quat_wxyz, np.array([0.0, 0.0, -1.0], dtype=np.float64)
     )
@@ -182,7 +182,7 @@ def build_obs(
     # --- foot contact (FL, FR, RL, RR), threshold 1.0 N ---
     foot_force_w = np.zeros((4, 3), dtype=np.float64)
     for i in range(4):
-        foot_force_w[i] = _contact_force_on_geom_world(model, data, int(info.foot_geom_id_all[i]))
+        foot_force_w[i] = _contact_force_on_body_world(model, data, int(info.calf_body_id_all[i]))
     foot_force_mag = np.linalg.norm(foot_force_w, axis=1)
     foot_contact = (foot_force_mag > FOOT_CONTACT_THRESHOLD).astype(np.float64)
 
@@ -199,9 +199,18 @@ def build_obs(
     # because the URDF foot_fixed joint offset was preserved at compile time).
     rear_foot_w_xy = data.geom_xpos[info.rear_foot_geom_id, :2]
     fz_rear = np.clip(foot_force_w[rear_idx, 2:3], a_min=0.0, a_max=None)  # (2, 1)
-    fz_sum = max(float(fz_rear.sum()), 1e-6)
-    cop_xy = (rear_foot_w_xy * fz_rear).sum(axis=0) / fz_sum
+
+    fz_sum = float(fz_rear.sum())
+    if fz_sum > 1.0:
+        cop_xy = (rear_foot_w_xy * fz_rear).sum(axis=0) / fz_sum
+    else:
+        # no reliable rear contact: do NOT fall back to world origin
+        cop_xy = rear_foot_w_xy.mean(axis=0)
+
     com_cop_xy = com_xy - cop_xy
+
+    # keep policy input inside a sane range before scale=5.0
+    com_cop_xy = np.clip(com_cop_xy, -0.25, 0.25)
 
     # --- assemble in the exact PolicyCfg ordering ---
     cmd = np.asarray(velocity_command, dtype=np.float64)
@@ -224,3 +233,32 @@ def build_obs(
 
     assert obs.shape == (OBS_DIM,), f"obs has wrong shape {obs.shape}"
     return obs
+
+def _contact_force_on_body_world(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    body_id: int,
+) -> np.ndarray:
+    f_world = np.zeros(3, dtype=np.float64)
+    if data.ncon == 0:
+        return f_world
+
+    result = np.zeros(6, dtype=np.float64)
+    for i in range(data.ncon):
+        c = data.contact[i]
+        g1, g2 = int(c.geom1), int(c.geom2)
+        b1 = int(model.geom_bodyid[g1])
+        b2 = int(model.geom_bodyid[g2])
+
+        if b2 == body_id:
+            sign = 1.0
+        elif b1 == body_id:
+            sign = -1.0
+        else:
+            continue
+
+        mujoco.mj_contactForce(model, data, i, result)
+        R = np.array(c.frame, dtype=np.float64).reshape(3, 3)
+        f_world += sign * (R.T @ result[:3])
+
+    return f_world

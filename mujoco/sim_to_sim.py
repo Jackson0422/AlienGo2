@@ -139,13 +139,22 @@ def main() -> int:
     # ---- reset
     mb.reset_robot_to_default(model, data, info)
     print(f"[sim_to_sim] Reset: base z = {data.qpos[info.base_qpos_addr + 2]:.4f} m")
+    q_des_isaac = ISAAC_DEFAULT_JOINT_POS.copy()
+    for _ in range(20):
+        q_isaac = data.qpos[info.isaac_joint_qpos_addr]
+        qd_isaac = data.qvel[info.isaac_joint_qvel_addr]
+        tau_isaac = compute_pd_torque(q_des_isaac, q_isaac, qd_isaac)
+        data.ctrl[info.isaac_joint_actuator_id] = tau_isaac
+        mujoco.mj_step(model, data)
+
+    # Keep last_action as zeros, matching reset semantics.
+    last_action_raw = np.zeros(12, dtype=np.float64)
 
     # ---- renderer (headless EGL)
     renderer = mujoco.Renderer(model, height=args.height, width=args.width)
     frames: List[np.ndarray] = []
 
     # ---- rollout loop
-    last_action_raw = np.zeros(12, dtype=np.float64)
     velocity_command = np.array([args.cmd_vx, args.cmd_vy, args.cmd_wz], dtype=np.float64)
 
     t0 = time.time()
@@ -153,13 +162,23 @@ def main() -> int:
     for step in range(args.video_length):
         obs = ob.build_obs(model, data, info, last_action_raw, velocity_command)
 
-        action = policy.act(obs).astype(np.float64)
-        last_action_raw = action.copy()
+        if args.print_every and step % args.print_every == 0:
+            print("  obs base_ang_vel =", obs[0:3])
+            print("  obs base_lin_vel =", obs[3:6])
+            print("  obs base_height  =", obs[6])
+            print("  obs proj_grav    =", obs[10:13])
+            print("  obs joint_pos    =", obs[13:25])
+            print("  obs joint_vel    =", obs[25:37])
+            print("  obs foot_contact =", obs[37:41])
+            print("  obs rear_fz      =", obs[41:43])
+            print("  obs com_cop_xy   =", obs[43:45])
+            print("  obs last_action max =", np.abs(obs[45:57]).max())
 
-        # Isaac Lab JointPositionAction.process_actions:
-        #   q_des = default_joint_pos + scale * raw_action
-        # (use_default_offset=True, scale=0.3) — cat_flat_env_cfg.py:119-138 and odri.py defaults.
-        q_des_isaac = ISAAC_DEFAULT_JOINT_POS + ACTION_SCALE * action
+        action_raw = policy.act(obs).astype(np.float64)
+        action_applied = action_raw
+
+        last_action_raw = action_raw.copy()
+        q_des_isaac = ISAAC_DEFAULT_JOINT_POS + ACTION_SCALE * action_raw
 
         # Inner physics loop: decimation=4 substeps per policy step.
         for _ in range(DECIMATION):
@@ -186,7 +205,12 @@ def main() -> int:
             pitch_deg = float(np.degrees(np.arctan2(-g_b[0], -g_b[2])))
             print(
                 f"[step {step:4d}] base_z={base_z:+.3f} pitch={pitch_deg:+.1f}deg "
-                f"|act|max={float(np.abs(action).max()):.2f} |tau|max={pd_torque_log[-1]:.2f}"
+                f"|act_raw|max={float(np.abs(action_raw).max()):.2f} "
+                f"|act_applied|max={float(np.abs(action_applied).max()):.2f} "
+                f"|tau|max={pd_torque_log[-1]:.2f}"
+                f"foot={obs[37:41]} "
+                f"rear_fz={obs[41:43]} "
+                f"com_cop={obs[43:45]}"
             )
 
     elapsed = time.time() - t0

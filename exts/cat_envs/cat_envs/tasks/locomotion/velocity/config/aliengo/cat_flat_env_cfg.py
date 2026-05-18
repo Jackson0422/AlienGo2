@@ -801,7 +801,7 @@ class AlienGoFlatEnvCfg_PLAY(AlienGoFlatEnvCfg):
         self.events.randomize_trunk_mass = None
         self.events.randomize_leg_mass = None
         self.events.randomize_pd_gains = None
-
+    
         # set velocity command
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)

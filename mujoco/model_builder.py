@@ -88,16 +88,16 @@ JOINT_FRICTIONLOSS: float = 0.05    # N·m, light Coulomb friction at the joints
 # bipedal-stance robot: the rear feet pivot freely about the body z-axis,
 # producing a yaw-drift the policy never had to handle in training.
 FLOOR_SLIDE_FRICTION: float = 1.0
-FLOOR_TORSIONAL_FRICTION: float = 0.05
-FLOOR_ROLLING_FRICTION: float = 0.0001
+FLOOR_TORSIONAL_FRICTION: float = 0.25
+FLOOR_ROLLING_FRICTION: float = 0.001
 
 # Contact compliance (solref = [time_const, damp_ratio]; solimp = [dmin, dmax,
 # width, midpoint, power]). Defaults are [0.02, 1.0] and [0.9, 0.95, 0.001,
 # 0.5, 2]. We loosen dmax slightly and set time_const = 2*SIM_DT = 0.01s
 # explicitly so the contact response time matches the policy step. This
 # brings MuJoCo closer to PhysX's "soft" few-iteration contact feel.
-CONTACT_SOLREF: List[float] = [2.0 * SIM_DT, 1.0]
-CONTACT_SOLIMP: List[float] = [0.9, 0.92, 0.001, 0.5, 2.0]
+CONTACT_SOLREF: List[float] = [0.015, 1.0]
+CONTACT_SOLIMP: List[float] = [0.85, 0.90, 0.001, 0.5, 2.0]
 
 # Solver: Newton + tighter tolerance + capped iterations.
 # Default solver is CG with iterations=100, tolerance=1e-8.
