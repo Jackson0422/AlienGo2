@@ -66,7 +66,7 @@ import policy_loader as pl
 
 
 DEFAULT_URDF = "mujoco/aliengo_description/aliengo.xml"
-DEFAULT_RUN = "logs/rl_games/solo_cat/2026-05-14_07-28-05"
+DEFAULT_RUN = "logs/rl_games/solo_cat/2026-06-05_17-14-31"
 
 
 def parse_args() -> argparse.Namespace:
@@ -137,15 +137,24 @@ def main() -> int:
     print(f"[sim_to_sim] Policy device = {policy.device}, checkpoint = {policy.checkpoint_path}")
 
     # ---- reset
+    #
+    # IMPORTANT (sim-to-sim init alignment): Isaac Lab's play.py feeds the
+    # policy the observation from `env.reset()` DIRECTLY, with NO settling /
+    # warm-up steps (see scripts/rl_games/play.py:166-208). The robot is reset
+    # to init_state (z=0.4, qvel=0, default joints) and the very first policy
+    # action is computed from that exact, at-rest state — at which point the
+    # feet are ~0.05 m above the ground (natural stand height ≈ 0.35 m), so
+    # `foot_contact`/`rear_fz` are zero and `base_lin_vel` is zero.
+    #
+    # Previously we ran 20 PD "settle" steps here, which let the base free-fall
+    # ~0.05 m and pick up a ~0.94 m/s downward velocity before the first
+    # observation. That made the step-0 observation (base_lin_vel_z, height,
+    # foot_contact) completely different from what the policy saw in training,
+    # so its first action was already off-distribution and the rollout diverged
+    # into a forward face-plant. We now mirror Isaac Lab exactly: no settle.
     mb.reset_robot_to_default(model, data, info)
     print(f"[sim_to_sim] Reset: base z = {data.qpos[info.base_qpos_addr + 2]:.4f} m")
     q_des_isaac = ISAAC_DEFAULT_JOINT_POS.copy()
-    for _ in range(20):
-        q_isaac = data.qpos[info.isaac_joint_qpos_addr]
-        qd_isaac = data.qvel[info.isaac_joint_qvel_addr]
-        tau_isaac = compute_pd_torque(q_des_isaac, q_isaac, qd_isaac)
-        data.ctrl[info.isaac_joint_actuator_id] = tau_isaac
-        mujoco.mj_step(model, data)
 
     # Keep last_action as zeros, matching reset semantics.
     last_action_raw = np.zeros(12, dtype=np.float64)

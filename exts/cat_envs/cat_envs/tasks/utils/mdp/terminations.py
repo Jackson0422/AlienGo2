@@ -151,3 +151,12 @@ def base_height_below_consecutive(
         Boolean tensor indicating termination condition.
     """
     return _base_height_checker_global(env, min_height, consecutive_frames, asset_cfg)
+
+def base_xy_out_of_box(
+    env,
+    half_extent: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    robot = env.scene[asset_cfg.name]
+    pos_xy = robot.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2]
+    return (pos_xy.abs() > half_extent).any(dim=1)

@@ -341,11 +341,11 @@ class RewardsCfg:
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
 
-    track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_exp,
-        weight=0.25,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
-    )
+    # track_ang_vel_z_exp = RewTerm(
+    #     func=mdp.track_ang_vel_z_exp,
+    #     weight=0.25,
+    #     params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    # )
     
     # Base height:  r = -(z - z^c)^2
     base_height = RewTerm(
@@ -368,7 +368,7 @@ class RewardsCfg:
     # Upright balance:  r = exp(-v_z^2/sigma) + exp(-p_dot^2/sigma)  if upright else 0
     upright_balance = RewTerm(
         func=custom_rewards.upright_balance,
-        weight=0.5,
+        weight=1.0,
         params={
             "sigma_vz": 0.25,
             "sigma_pitch_rate": 0.25,
@@ -376,22 +376,10 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    # Support polygon:  r = -|v_x^c|^2 * (pi/2 - |atan2(dx_b, dz_b)|)^2  (conditional)
-    support_polygon = RewTerm(
-        func=custom_rewards.support_polygon,
-        weight=0.5,
-        params={
-            "command_name": "base_velocity",
-            "asset_cfg": SceneEntityCfg("robot"),
-            "foot_cfg": SceneEntityCfg(
-                "robot", body_names=["RL_calf", "RR_calf"]
-            ),
-        },
-    )
 
     joint_acc_penalty = RewTerm(
         func=custom_rewards.joint_acceleration_penalty,
-        weight=5e-8,
+        weight=1e-7, # 5e-8 is the default weight for the joint acceleration penalty
         params={
             "asset_cfg": SceneEntityCfg("robot"),
         },
@@ -439,23 +427,22 @@ class RewardsCfg:
         },
     )
 
-    # Per-foot Gaussian reward on rear foot swing height. Complements the
-    # `rear_air_time_when_upright` constraint: that one penalizes too-short
-    # air time on touchdown (negative feedback), this one positively rewards
-    # the foot for tracking a desired clearance during swing. Together they
-    # encourage real, well-shaped stepping once the robot is upright.
-    # 后脚摆动高度高斯奖励：和 `rear_air_time_when_upright` 约束互补——
-    # 约束在落地帧惩罚"换步太快"（负反馈），这里在摆动相奖励"抬脚到位"
-    # （正反馈）。叠在一起鼓励真正的、有形状的迈步动作。
-    rear_foot_swing_height = RewTerm(
-        func=custom_rewards.rear_foot_swing_height,
-        weight=0.3,
+    rear_foot_force_balance = RewTerm(
+        func=custom_rewards.rear_foot_force_balance,
+        weight=0.5,   # 起步值，先看 tensorboard 占比再调
         params={
-            "target_height": 0.08,          # 8 cm 期望抬脚高度
-            "sigma": 0.03,                  # 3 cm 高斯容差
-            "upright_pitch_deg": 70.0,      # 与 air-time 约束一致
-            "min_base_height": 0.55,        # 与 air-time 约束一致
-            "contact_threshold": 1.0,
+            "k": 1.0,
+            "force_norm": 120.0,
+            "upright_pitch_deg": 70.0,
+            "min_height": 0.55,
+            "max_front_contact": 1.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "contact_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["RL_calf", "RR_calf"]
+            ),
+            "front_contact_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["FL_calf", "FR_calf"]
+            ),
         },
     )
 
@@ -557,23 +544,18 @@ class ConstraintsCfg:
         },
     )
 
-    # Air-time constraint on the two rear feet, only active once the robot
-    # is upright. Forces the policy to actually lift the rear feet during
-    # standing (prevents the "one foot glued, body rotates" failure mode).
-    # 立起来之后才生效的后脚 air-time 约束：强制策略真的交替抬脚，
-    # 避免出现一只脚粘地、身体绕该脚旋转的失效模式。
-    rear_air_time_when_upright = ConstraintTerm(
-        func=constraints.air_time_when_upright,
+    # 立起后惩罚 yaw 旋转：直接治"绕单脚原地打转"。
+    # 复用 constraints.base_ang_vel_z_when_standing（已存在，之前未启用）。
+    base_yaw_rate_when_standing = ConstraintTerm(
+        func=constraints.base_ang_vel_z_when_standing,
         max_p=0.25,
         params={
-            "limit": 0.25,                  # 每次腾空至少 0.35 s
-            "upright_pitch_deg": 70.0,      # pitch >= 70° 才生效
-            "min_height": 0.55,             # 同时 base 高度 >= 0.55 m
-            "asset_cfg": SceneEntityCfg(
-                "contact_forces", body_names=["RL_calf", "RR_calf"]
-            ),
+            "limit": 0.5,          # rad/s，立起后允许的最大 yaw 角速度，先松后紧
+            "min_height": 0.55,    # 与其它 upright gate 一致
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
+
 
 @configclass
 class TerminationsCfg:
@@ -720,18 +702,10 @@ class CurriculumCfg:
         },
     )
 
-    # Curriculum for the upright air-time constraint:
-    # ramp max_p from 1/20 = 0.05 (curriculum default start) up to 0.25,
-    # same horizon as the other soft constraints. The rear-up phase is
-    # protected by the in-function pitch/height gate (term is identically
-    # 0 below the gate), not by the curriculum, so init_max_p=0.25 is safe.
-    # 渐进策略：与其他软约束一致，max_p 从 0.05 线性升到 0.25。
-    # rear-up 阶段通过函数内部的 pitch + height gate 保护（gate 不满足时
-    # 整个 term 为 0），不需要靠 curriculum 兜底。
-    rear_air_time_when_upright = CurrTerm(
+    base_yaw_rate_when_standing = CurrTerm(
         func=curriculums.modify_constraint_p,
         params={
-            "term_name": "rear_air_time_when_upright",
+            "term_name": "base_yaw_rate_when_standing",
             "num_steps": 24 * MAX_CURRICULUM_ITERATIONS,
             "init_max_p": 0.25,
         },

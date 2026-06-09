@@ -1113,11 +1113,15 @@ def dynamic_balance_cp_switch(
     r_vel_in     = torch.exp(-(v_norm / sigma_v) ** 2)
     r_angvel_in  = torch.exp(-(w_rp_norm / sigma_w) ** 2)
 
+    # Edge window so the absolute terms also fade to 0 at the boundary
+    # (d_norm -> 1), matching reward_outside's penalty (also 0 there) for a
+    # C0-continuous transition. r_margin already carries its own (1-d_norm).
+    edge = (1.0 - d_norm).clamp(min=0.0)
     reward_inside = (
         w_margin       * r_margin
-        + w_com_err_in * r_com_err_in
-        + w_vel_in     * r_vel_in
-        + w_angvel_in  * r_angvel_in
+        + (w_com_err_in * r_com_err_in
+           + w_vel_in   * r_vel_in
+           + w_angvel_in * r_angvel_in) * edge
     )
 
     # =====================================================================
@@ -1138,7 +1142,6 @@ def dynamic_balance_cp_switch(
         + w_com_err_rec   * r_com_err_rec
         + w_vel_rec       * r_vel_rec
         + w_angvel_rec    * r_angvel_rec
-        + w_reentry_bonus * reentry_event
     )
 
     # ---- Probe cache for TensorBoard logging (read by zero-weight probe terms) ----
@@ -1148,9 +1151,19 @@ def dynamic_balance_cp_switch(
     env._dbcp_log_reentry_event     = reentry_event.detach()
 
     # =====================================================================
-    # 7. Hard mode switch
+    # 7. Soft mode switch (sigmoid blend around d_norm = 1) + re-entry bonus
     # =====================================================================
-    reward = inside_mask * reward_inside + (1.0 - inside_mask) * reward_outside
+    # Soft blend avoids the value cliff / high-frequency mode flipping at the
+    # boundary. reward_inside is already ~0 at the boundary (edge window), so
+    # the blend is C0-continuous. tau controls the transition width in d_norm.
+    blend_tau = 0.1
+    alpha = torch.sigmoid((1.0 - d_norm) / blend_tau)
+    reward = alpha * reward_inside + (1.0 - alpha) * reward_outside
+
+    # Re-entry bonus must live OUTSIDE the mask: reentry_event is only 1 when
+    # the env is inside (inside_mask=1), so when it was multiplied into
+    # reward_outside it was always killed by (1-inside_mask)=0 and never fired.
+    reward = reward + w_reentry_bonus * reentry_event
 
     # =====================================================================
     # 8. Gates: height + front feet off + at least one rear contact
@@ -1495,3 +1508,148 @@ def rear_foot_swing_height(
     height_gate = torch.sigmoid((h - min_base_height) / 0.02)
 
     return reward * pitch_gate * height_gate
+
+def rear_stepping_frequency(
+    env: ManagerBasedRLEnv,
+    f_target: float = 1.5,
+    duty: float = 0.55,
+    phase_offsets: tuple[float, float] = (0.0, 0.5),
+    kappa: float = 20.0,
+    sigma_cf: float = 100.0,
+    sigma_cv: float = 0.25,
+    enable_stance: bool = False,
+    min_height: float = 0.60,
+    max_front_contact: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    foot_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=["RL_calf", "RR_calf"]),
+    contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["RL_calf", "RR_calf"]),
+    front_contact_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_calf", "FR_calf"]),
+) -> torch.Tensor:
+    """Walk-These-Ways style stepping-frequency reward for the two rear feet.
+
+    Maintains a per-env gait clock in [0, 1) advancing at ``f_target`` Hz.
+    For each rear foot i a phase ``phi_i = (clock + offset_i) mod 1`` is built,
+    then a smooth stance indicator ``C_i in [0, 1]`` (1 during stance, 0 during
+    swing). Two terms follow the paper:
+
+        r_swing_i  = (1 - C_i) * exp(-||f_i||^2 / sigma_cf)   # zero force in swing
+        r_stance_i = C_i       * exp(-||v_i||^2 / sigma_cv)   # zero slide in stance
+
+    Setting ``enable_stance=False`` keeps only the swing term, which acts as a
+    *lower bound* on stepping frequency: a foot that never lifts gets 0 reward
+    over the swing window and is therefore continuously penalised relative to
+    a foot that lifts at >= f_target.
+
+    Returns the per-env mean over the two feet, in [0, 1]. Gated by base height
+    and the front feet being off the ground, mirroring ``com_cop_correction``.
+    """
+    asset = env.scene[asset_cfg.name]
+    device = asset.data.root_pos_w.device
+    num_envs = env.num_envs
+
+    # --- 1. Maintain the gait clock --------------------------------------
+    if not hasattr(env, "_gait_clock"):
+        env._gait_clock = torch.zeros(num_envs, device=device)
+
+    reset_ids = env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+    if reset_ids.numel() > 0:
+        env._gait_clock[reset_ids] = 0.0
+    just_reset_mask = env.episode_length_buf == 1
+    if just_reset_mask.any():
+        env._gait_clock[just_reset_mask] = 0.0
+
+    env._gait_clock = (env._gait_clock + f_target * env.step_dt) % 1.0
+
+    # --- 2. Per-foot phase and smooth stance indicator -------------------
+    offsets = torch.tensor(phase_offsets, device=device)              # (2,)
+    phase = (env._gait_clock.unsqueeze(-1) + offsets) % 1.0           # (N, 2)
+    # phi < duty -> stance (~1), phi >= duty -> swing (~0). Symmetric, no wrap
+    # issue because phi in [0,1).
+    C_cmd = torch.sigmoid(kappa * (duty - phase))                     # (N, 2)
+    swing_cmd = 1.0 - C_cmd                                           # (N, 2)
+
+    # --- 3. Contact force and foot velocity ------------------------------
+    contact_sensor = env.scene[contact_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]  # (N, 2, 3)
+    f_sq = (forces ** 2).sum(dim=-1)                                                # (N, 2)
+
+    # Use calf-link linear velocity as a proxy for foot velocity. Cheap and
+    # smooth; if precision matters, replace with finite-difference of
+    # ``_get_foot_pos_from_calf``.
+    foot_vel = asset.data.body_lin_vel_w[:, foot_cfg.body_ids, :2]                  # (N, 2, 2)
+    v_sq = (foot_vel ** 2).sum(dim=-1)                                              # (N, 2)
+
+    # --- 4. The two Walk-These-Ways terms --------------------------------
+    r_swing = swing_cmd * torch.exp(-f_sq / sigma_cf)                 # (N, 2)
+    if enable_stance:
+        r_stance = C_cmd * torch.exp(-v_sq / sigma_cv)                # (N, 2)
+        per_foot = r_swing + r_stance                                  # (N, 2)
+        # Normalise so output stays in [0, 1] regardless of enable_stance.
+        per_foot = per_foot * 0.5
+    else:
+        per_foot = r_swing
+
+    reward = per_foot.mean(dim=1)                                     # (N,)
+
+    # --- 5. Gates: same convention as com_cop_correction -----------------
+    h = asset.data.root_pos_w[:, 2]
+    height_gate = torch.sigmoid((h - min_height) / 0.02)
+
+    front_sensor = env.scene[front_contact_cfg.name]
+    front_forces = front_sensor.data.net_forces_w_history[:, -1, front_contact_cfg.body_ids]
+    front_norms = torch.norm(front_forces, dim=-1)
+    front_max = front_norms.max(dim=1)[0]
+    front_gate = (front_max < max_front_contact).float()
+
+    return reward * height_gate * front_gate
+
+def rear_foot_force_balance(
+    env: ManagerBasedRLEnv,
+    k: float = 1.0,              # 形状尖锐度，越大越严格
+    force_norm: float = 120.0,  # 归一化尺度，约等于单脚分担一半体重时的 Fz
+    upright_pitch_deg: float = 70.0,
+    min_height: float = 0.55,
+    max_front_contact: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    contact_cfg: SceneEntityCfg = SceneEntityCfg(
+        "contact_forces", body_names=["RL_calf", "RR_calf"]
+    ),
+    front_contact_cfg: SceneEntityCfg = SceneEntityCfg(
+        "contact_forces", body_names=["FL_calf", "FR_calf"]
+    ),
+) -> torch.Tensor:
+    """后脚竖直支撑力均衡奖励（exp 格式）：
+
+        r = exp(-k * (|Fz_RL - Fz_RR| / force_norm)^2)
+
+    输出范围 [0, 1]，两只后脚载荷越均衡奖励越接近 1，越不平衡越接近 0。
+    正奖励，配置里用正权重。鼓励策略进入"立起 + 双脚均衡承载"的状态，
+    打掉"一只踩死、一只悬空"导致绕单脚旋转的失效模式。
+
+    仅在立起状态生效（pitch >= upright_pitch_deg 且 base 高度足够、
+    前脚离地），避免干扰起身阶段。
+    """
+    asset = env.scene[asset_cfg.name]
+    contact_sensor = env.scene[contact_cfg.name]
+
+    # 两只后脚的竖直支撑力 (N, 2) -> [RL, RR]
+    rear_forces = contact_sensor.data.net_forces_w_history[:, -1, contact_cfg.body_ids]
+    fz = rear_forces[..., 2].clamp(min=0.0)
+    imbalance = torch.abs(fz[:, 0] - fz[:, 1]) / force_norm   # >= 0
+    reward = torch.exp(-k * imbalance ** 2)                   # [0, 1]
+
+    # --- gate 1: pitch 立起 ---
+    g = asset.data.projected_gravity_b
+    pitch_deg = torch.atan2(-g[:, 0], -g[:, 2]) * (180.0 / math.pi)
+    pitch_gate = (pitch_deg >= upright_pitch_deg).float()
+
+    # --- gate 2: base 高度 ---
+    h = asset.data.root_pos_w[:, 2]
+    height_gate = torch.sigmoid((h - min_height) / 0.02)
+
+    # --- gate 3: 前脚离地 ---
+    front_forces = contact_sensor.data.net_forces_w_history[:, -1, front_contact_cfg.body_ids]
+    front_max = torch.norm(front_forces, dim=-1).max(dim=1)[0]
+    front_gate = (front_max < max_front_contact).float()
+
+    return reward * pitch_gate * height_gate * front_gate     # [0, 1]

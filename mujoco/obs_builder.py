@@ -200,17 +200,23 @@ def build_obs(
     rear_foot_w_xy = data.geom_xpos[info.rear_foot_geom_id, :2]
     fz_rear = np.clip(foot_force_w[rear_idx, 2:3], a_min=0.0, a_max=None)  # (2, 1)
 
+    # Match Isaac Lab's `com_cop_offset` (observations.py:97) EXACTLY:
+    #     cop_xy = (foot_pos * fz).sum(dim=1) / fz.sum(dim=1).clamp(min=1e-6)
+    # When there is no rear contact (fz_sum -> 0), the numerator is also ~0 and
+    # dividing by the 1e-6 floor yields cop_xy = (0, 0), i.e. the WORLD ORIGIN,
+    # so com_cop = com_xy (the absolute world CoM). The policy was trained with
+    # this exact behavior, so we must reproduce it rather than falling back to
+    # the rear-foot midpoint.
     fz_sum = float(fz_rear.sum())
-    if fz_sum > 1.0:
-        cop_xy = (rear_foot_w_xy * fz_rear).sum(axis=0) / fz_sum
-    else:
-        # no reliable rear contact: do NOT fall back to world origin
-        cop_xy = rear_foot_w_xy.mean(axis=0)
+    cop_xy = (rear_foot_w_xy * fz_rear).sum(axis=0) / max(fz_sum, 1e-6)
 
     com_cop_xy = com_xy - cop_xy
 
-    # keep policy input inside a sane range before scale=5.0
-    com_cop_xy = np.clip(com_cop_xy, -0.25, 0.25)
+    # NOTE: Isaac Lab's `com_cop_offset` (observations.py:99) returns the raw
+    # (com - cop) offset WITHOUT any clipping. The policy was trained on those
+    # un-clamped values, so we must NOT clip here — doing so silently caps a
+    # balance-critical observation (the value already sits at the ±0.25 limit
+    # at reset) and biases the policy toward falling forward.
 
     # --- assemble in the exact PolicyCfg ordering ---
     cmd = np.asarray(velocity_command, dtype=np.float64)

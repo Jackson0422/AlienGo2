@@ -455,3 +455,15 @@ def air_time_when_upright(
     ).float().unsqueeze(1)
 
     return (limit - last_air_time) * touchdown.float() * upright_gate
+
+def base_xy_drift(
+    env,
+    free_half_extent: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """CaT 越界量 = max(0, |x|-r) + max(0, |y|-r)，单位米。
+    自由区内整张返回 0，自由区外越远值越大。"""
+    robot = env.scene[asset_cfg.name]
+    pos_xy = robot.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2]
+    viol = (pos_xy.abs() - free_half_extent).clamp(min=0.0)  # (N, 2)
+    return viol.sum(dim=1, keepdim=True)                      # (N, 1)
