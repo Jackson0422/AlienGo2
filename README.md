@@ -37,35 +37,51 @@ class ConstraintsCfg:
 
 ## Installation
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/v2.1.0/source/setup/installation/pip_installation.html).
-- Clone the repository separately from the Isaac Lab installation (i.e., outside the `IsaacLab` directory).
-- Using a Python interpreter that has Isaac Lab installed, install the library:
+- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/v2.1.0/source/setup/installation/pip_installation.html) (version 2.1.0).
+- Clone this repository separately from the Isaac Lab installation (i.e., **outside** the `IsaacLab` directory).
+- Using the Python interpreter that has Isaac Lab installed, install the extension:
 
 ```bash
 python -m pip install -e exts/cat_envs
 ```
 
-## Running CaT
+## Reproducing the Results
 
-Navigate to the `/constraints-as-terminations` directory and launch a basic training setup on flat ground with cleanRL:
+The instructions below reproduce the AlienGo flat-ground locomotion results using the RL-Games backend. Run all commands from the `constraints-as-terminations` root directory.
 
-```bash
-python scripts/clean_rl/train.py --task=Isaac-Velocity-CaT-Flat-Solo12-v0 --headless
-```
-or with RLGames:
-```bash
-python scripts/rl_games/train.py --task=Isaac-Velocity-CaT-Flat-Solo12-v0 --headless
-```
+### 1. Training
 
-If everything goes well, you will see monitoring statistics in the terminal as the training progresses. At the end, you can check the result with cleanRL:
+Launch training for the AlienGo robot on flat ground:
 
 ```bash
-python scripts/clean_rl/play.py --task=Isaac-Velocity-CaT-Flat-Solo12-Play-v0 --headless --video --video_length 200
+python scripts/rl_games/train.py \
+  --task=Isaac-Velocity-CaT-Flat-AlienGo-v0 \
+  --num_envs=8192 \
+  --headless
 ```
-or with RLGames:
+
+Training statistics are printed to the terminal as the run progresses. Checkpoints and logs are saved under `logs/rl_games/solo_cat/<timestamp>/`.
+
+### 2. Evaluation (Play)
+
+Once training is complete, roll out the learned policy and record a video:
+
 ```bash
-python scripts/rl_games/play.py --task=Isaac-Velocity-CaT-Flat-Solo12-Play-v0 --headless --video --video_length 200
+python scripts/rl_games/play.py --task=Isaac-Velocity-CaT-Flat-AlienGo-Play-v0 --headless --video --video_length 200
 ```
+
+The recorded video is saved in the corresponding log directory.
+
+## Monitoring with TensorBoard
+
+To visualize the training curves, launch TensorBoard pointed at the RL-Games log directory:
+
+```bash
+tensorboard --logdir=logs/rl_games/solo_cat --port=6006
+```
+
+Then open [http://localhost:6006](http://localhost:6006) in your browser.
+
 ## Citing
 
 Please cite this work as:
@@ -78,17 +94,3 @@ Please cite this work as:
       year={2024}
 }
 ```
-
-python scripts/rl_games/train.py \
-  --task=Isaac-Velocity-CaT-Flat-AlienGo-v0 \
-  --num_envs=8192 \
-  --headless
-
-python scripts/rl_games/play.py --task=Isaac-Velocity-CaT-Flat-AlienGo-Play-v0 --headless --video --video_length 200
-
-tensorboard --logdir=/home/easyai/constraints-as-terminations/logs/rl_games/solo_cat --port=6006
-
-http://localhost:6006
-
-2026-04-14_16-57-33学会了比较好的站立姿态
-2026-04-15_07-21-37学会了维持平衡，但是只学会了迈一步
